@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tweet Watcher</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- 登录 / 首次设置 -->
+<div id="auth" class="center hidden">
+  <div class="login-box">
+    <div class="lock">🔒</div>
+    <h1 id="auth-title">Tweet Watcher</h1>
+    <div class="sub" id="auth-sub">请输入密码访问</div>
+    <div id="auth-msg" class="msg err hidden"></div>
+    <form id="auth-form">
+      <label id="auth-label">密码</label>
+      <input type="password" id="auth-pw" placeholder="访问密码" autocomplete="current-password" required>
+      <div id="auth-pw2-wrap" class="hidden">
+        <label>确认密码</label>
+        <input type="password" id="auth-pw2" placeholder="再输一次" autocomplete="new-password">
+      </div>
+      <button type="submit" class="btn-primary btn-full" id="auth-submit">🔓 登录</button>
+    </form>
+  </div>
+</div>
+
+<!-- 面板 -->
+<div id="panel" class="wrap hidden">
+  <div class="header">
+    <h1>🐦 Tweet Watcher <span>面板</span></h1>
+    <button class="btn-logout" id="logout">🚪 登出</button>
+  </div>
+
+  <div id="toast" class="msg hidden"></div>
+
+  <!-- 监控状态 -->
+  <div class="section">
+    <h2>监控状态</h2>
+    <div class="statusbar">
+      <span class="dot off" id="run-dot"></span>
+      <span id="run-text">连接中…</span>
+      <span class="spacer"></span>
+      <button class="btn-sm btn-stop hidden" id="btn-pause">⏸ 暂停监控</button>
+      <button class="btn-sm btn-start hidden" id="btn-resume">▶ 恢复监控</button>
+    </div>
+    <div style="margin-top:12px">
+      <span class="toggle" id="log-toggle">📋 实时日志</span>
+      <div id="log-wrap" class="hidden" style="margin-top:8px">
+        <div class="logbox" id="logbox"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 监控账号 -->
+  <div class="section">
+    <h2>监控账号</h2>
+    <div class="acct-head">
+      <span class="col-name">用户名</span>
+      <span class="col-num">条数</span>
+      <span class="col-num">频率(秒)</span>
+      <span class="col-badge">状态</span>
+      <span class="col-x"></span>
+    </div>
+    <div id="acct-list"></div>
+    <button class="btn-add" id="btn-add-acct">➕ 添加账号</button>
+    <div class="hint">条数=每次拉取的推文数；频率=多少秒查一次（≥30）。改完点下方“保存配置”，几秒内即时生效。</div>
+  </div>
+
+  <!-- Twitter 认证 -->
+  <div class="section">
+    <h2>Twitter 认证</h2>
+    <label>auth_token</label>
+    <input type="password" id="auth_token" autocomplete="new-password" placeholder="从浏览器 Cookie 获取">
+    <label>ct0</label>
+    <input type="password" id="ct0" autocomplete="new-password" placeholder="从浏览器 Cookie 获取">
+    <div class="hint">F12 → Application → Cookies → x.com。已保存的留空即保持不变。</div>
+    <button class="btn-ghost btn-sm" id="btn-test-bird">🧪 测试 Twitter 拉取</button>
+  </div>
+
+  <!-- Telegram -->
+  <div class="section">
+    <h2>Telegram 推送</h2>
+    <div class="row">
+      <div>
+        <label>Bot Token</label>
+        <input type="password" id="tg_bot_token" autocomplete="new-password" placeholder="从 @BotFather 获取">
+      </div>
+      <div>
+        <label>Chat ID</label>
+        <input type="text" id="tg_chat_id" placeholder="从 @userinfobot 获取">
+      </div>
+    </div>
+    <button class="btn-ghost btn-sm" id="btn-test-tg">🧪 测试 Telegram 推送</button>
+  </div>
+
+  <!-- 其他 -->
+  <div class="section">
+    <h2>其他</h2>
+    <label>bird CLI 路径</label>
+    <input type="text" id="bird_path" placeholder="/www/server/nodejs/vXX/bin/bird">
+  </div>
+
+  <button class="btn-primary btn-full" id="btn-save">💾 保存配置</button>
+
+  <!-- 安全 -->
+  <div class="section" style="margin-top:16px">
+    <h2>安全</h2>
+    <span class="toggle" id="pw-toggle">🔑 修改访问密码</span>
+    <div id="pw-form" class="hidden" style="margin-top:12px">
+      <label>当前密码</label>
+      <input type="password" id="old_pw" autocomplete="current-password">
+      <label>新密码</label>
+      <input type="password" id="new_pw" autocomplete="new-password" placeholder="至少 8 位">
+      <button class="btn-ghost btn-sm" id="btn-chpw">✅ 修改密码</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,86 @@
+# ==========================================================================
+# Tweet Watcher — .gitignore
+# 目标：推送到公开 GitHub 时，绝不泄露任何凭据 / 运行时数据。
+# 应入库：server.js  lib/  public/  package.json  package-lock.json
+#         README.md  CHANGELOG.md  CONTRIBUTING.md  LICENSE  .github/  .gitignore
+# ==========================================================================
+
+# --- 运行时数据 & 全部凭据（最重要，绝不入库）---------------------------
+# DATA_DIR=./data，包含：
+#   config.json         账号配置 + tg_chat_id（半敏感）
+#   secrets.json        auth_token / ct0 / tg_bot_token（明文凭据）
+#   password.json       登录密码 bcrypt 哈希
+#   session_secret.json 会话 HMAC 密钥 + epoch
+#   sent_ids.json       去重表（运行时状态）
+# 整个目录一律排除；同时兜底列出各文件名，防止 data/ 被误改位置后仍泄露。
+/data/
+data/
+secrets.json
+password.json
+session_secret.json
+sent_ids.json
+config.json
+
+# --- store.js 原子写残留的临时文件 --------------------------------------
+# 命名形如：data/config.json.<pid>.<rand>.tmp（正常 rename 后消失，崩溃时可能残留）
+*.tmp
+*.temp
+*.swp
+*.bak
+*~
+
+# --- 依赖 & 缓存 ---------------------------------------------------------
+node_modules/
+.npmcache/
+.npm/
+.pnp
+.pnp.js
+jspm_packages/
+.cache/
+
+# --- 日志 ---------------------------------------------------------------
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pm2/
+
+# --- 环境变量 / 私钥 / 证书（本项目不用 .env，但作为公开仓兜底防护）-----
+.env
+.env.*
+*.env
+.envrc
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
+# --- 进程 / 运行时垃圾 ---------------------------------------------------
+*.pid
+*.seed
+*.pid.lock
+pids/
+coverage/
+.nyc_output/
+
+# --- 编辑器 / IDE -------------------------------------------------------
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.project
+.settings/
+
+# --- 操作系统垃圾文件 ---------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini

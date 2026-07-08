@@ -1,0 +1,17 @@
+{
+  "name": "tweet-watcher",
+  "version": "3.0.0",
+  "private": true,
+  "description": "Twitter/X -> Telegram monitor with a built-in web panel (single Node service)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.21.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
