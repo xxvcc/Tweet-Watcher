@@ -22,6 +22,10 @@
         <label>确认密码</label>
         <input type="password" id="auth-pw2" placeholder="再输一次" autocomplete="new-password">
       </div>
+      <div id="auth-token-wrap" class="hidden">
+        <label>首次设置令牌</label>
+        <input type="text" id="auth-setup-token" placeholder="见服务端日志 (journalctl)" autocomplete="off">
+      </div>
       <button type="submit" class="btn-primary btn-full" id="auth-submit">🔓 登录</button>
     </form>
   </div>

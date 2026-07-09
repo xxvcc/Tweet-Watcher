@@ -45,8 +45,9 @@
     $('auth-label').textContent = needSetup ? '设置密码' : '密码';
     $('auth-pw').placeholder = needSetup ? '至少 8 位' : '访问密码';
     $('auth-pw2-wrap').classList.toggle('hidden', !needSetup);
+    $('auth-token-wrap').classList.toggle('hidden', !needSetup);
     $('auth-submit').textContent = needSetup ? '🔐 设置并进入' : '🔓 登录';
-    $('auth-pw').value = ''; $('auth-pw2').value = '';
+    $('auth-pw').value = ''; $('auth-pw2').value = ''; $('auth-setup-token').value = '';
   }
 
   $('auth-form').addEventListener('submit', async (e) => {
@@ -58,7 +59,9 @@
       if (mode === 'setup') {
         if (pw.length < 8) throw new Error('密码至少 8 位');
         if (pw !== $('auth-pw2').value) throw new Error('两次密码不一致');
-        await api('POST', 'api/setup', { password: pw });
+        const token = $('auth-setup-token').value.trim();
+        if (!token) throw new Error('请输入首次设置令牌（见服务端日志）');
+        await api('POST', 'api/setup', { password: pw, setup_token: token });
       } else {
         await api('POST', 'api/login', { password: pw });
       }
@@ -209,9 +212,16 @@
     $('auth_token').value = ''; $('ct0').value = ''; $('tg_bot_token').value = '';
     if (r.accounts) renderAccounts(r.accounts);
     await loadConfig();
+    return r;
   }
 
-  $('btn-save').onclick = async () => { try { await saveConfig(); toast('✅ 配置已保存'); } catch (e) { toast(e.message, 'err'); } };
+  $('btn-save').onclick = async () => {
+    try {
+      const r = await saveConfig();
+      if (r.warnings && r.warnings.length) toast('⚠ ' + r.warnings.join('；'), 'err');
+      else toast('✅ 配置已保存');
+    } catch (e) { toast(e.message, 'err'); }
+  };
 
   $('btn-test-bird').onclick = async () => {
     const btn = $('btn-test-bird'); btn.disabled = true; const old = btn.textContent; btn.textContent = '测试中…';

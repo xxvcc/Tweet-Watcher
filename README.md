@@ -252,22 +252,27 @@ server {
 
 - 首次访问 Web 页面时需设置密码（至少 8 位）
 - 密码以 **bcrypt**（cost 12）哈希存储在 `data/password.json`；兼容旧 `$2y$` 前缀（自动改写为 `$2b$`）
-- 密码错误时固定延迟 1 秒响应（防暴力破解）
-- **登录限流**（按真实客户端 IP，取 Nginx 注入的 `X-Real-IP`，防伪造）：连续失败 5 次锁 5 分钟、10 次锁 30 分钟、20 次锁 60 分钟
-- **会话**：HMAC-SHA256 签名的无状态 Cookie（有效期 7 天），内含 epoch —— 登出或改密会 `bump` epoch，使所有已签发会话**立即失效**
-- **CSRF 双提交令牌**：所有改动型接口校验，`timingSafeEqual` 常量时间比较
+- 密码使用**异步 bcrypt**（不阻塞事件循环），错误时固定延迟 1 秒响应（防暴力破解）
+- **登录限流**（按 `req.ip`，即 `trust proxy=loopback` 下 Nginx 传入的真实客户端 IP，客户端无法伪造）：连续失败 5 次锁 5 分钟、10 次锁 30 分钟、20 次锁 60 分钟；锁定期满即清零，且限流表有界（惰性回收 + 硬上限，防内存耗尽）
+- **首次设置令牌**：无密码时服务端启动会在日志打印一次性 `setup_token`，`/api/setup` 必须携带它才能设密，杜绝公网面板的无认证首次抢注（TOFU）。若 `password.json` 损坏，`hasPassword` 判定为 fail-closed（视为已设置），不会重开无认证设置
+- **会话**：HMAC-SHA256 签名的无状态 Cookie（有效期 7 天），内含 epoch —— 登出或改密会 `bump` epoch，使所有已签发会话**立即失效**；畸形 Cookie/会话一律返回 401（不再有 500 堆栈泄露）
+- **CSRF 双提交令牌**：所有改动型接口校验，`timingSafeEqual` 常量时间比较；`/api/logout` 仅在持有效会话+CSRF 时才全局吊销，未认证请求无法借此制造登出 DoS
+- **安全响应头**：CSP、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy`，并关闭 `X-Powered-By`
 - 凭据（`auth_token` / `ct0` / `tg_bot_token`）在日志输出中自动 redact，替换为 `***`
-- `trust proxy` 仅信任回环，避免客户端伪造 `X-Forwarded-For` 绕过限流
 - `data/` 目录权限 `0700`、文件写入 `0600`，位于站点根之外且永不被静态伺服（Node 只 `express.static` 伺服 `public/`）
-- 文件写入使用原子操作（先写临时文件再 `rename`），防止崩溃导致数据损坏
+- 文件写入使用原子替换（临时文件 + `fsync` + `rename` + 目录 `fsync`），防止崩溃/断电导致半写损坏；读取时区分「文件不存在」与「存在但损坏」，损坏不静默当作「未设置」
+- `bird_path` 只接受绝对路径、限定字符集、无 `..`、且文件名必须为 `bird`——防止已认证用户将其改指向 `/bin/sh` 等宿主二进制
 - 子进程调用 bird 带 30 秒超时保护，防止挂起
-- 忘记密码时，删除 `data/password.json` 即可重置：
+- 忘记密码时，需**停服 → 删除 `password.json` → 重启**，重启后从服务端日志读取新的一次性 `setup_token` 再走首次设置：
 
 ```bash
+systemctl stop tweet-watcher
 rm /www/tweet-watcher/data/password.json
+systemctl start tweet-watcher
+journalctl -u tweet-watcher -n 20 | grep 首次设置令牌   # 取出 setup_token
 ```
 
-删除后下次访问面板会回到「首次设置密码」流程。
+重启后下次访问面板会回到「首次设置密码」流程，需在页面填入日志中的令牌。
 
 ## 📬 Telegram 推送格式
 
@@ -365,7 +370,7 @@ which bird
 bird user-tweets elonmusk --json -n 1 --auth-token YOUR_TOKEN --ct0 YOUR_CT0 --no-color
 ```
 
-> ⚠️ `bird_path` 会经过格式校验，只允许普通绝对路径字符（以 `/` 开头，禁止 `..`）。请填写可执行文件的真实绝对路径，如 `which bird` 的输出。
+> ⚠️ `bird_path` 会经过格式校验：必须是绝对路径、限定字符集、不含 `..`，且**文件名必须为 `bird`**（防止改指向其它宿主二进制）。请填写 bird 可执行文件的真实绝对路径，如 `which bird` 的输出。
 
 ### Q: 想用别的方式常驻，而不是 systemd？
 
