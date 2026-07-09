@@ -1,11 +1,13 @@
 'use strict';
 // Tweet Watcher —— 单进程：既是网页面板，又是监控 worker。
+const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
 const cfgmod = require('./lib/config');
 const store = require('./lib/store');
 const auth = require('./lib/auth');
+const bird = require('./lib/bird');
 const state = require('./lib/state');
 const worker = require('./lib/worker');
 
@@ -162,8 +164,10 @@ app.post('/api/password', requireAuth, requireCsrf, wrap(async (req, res) => {
 app.get('/api/config', requireAuth, (req, res) => {
   const cfg = cfgmod.getConfig();
   const s = cfgmod.getSecrets();
+  let birdOk = false;
+  try { birdOk = fs.existsSync(cfg.bird_path); } catch (_) {}
   res.json({
-    bird_path: cfg.bird_path, tg_chat_id: cfg.tg_chat_id, accounts: cfg.accounts,
+    bird_path: cfg.bird_path, tg_chat_id: cfg.tg_chat_id, accounts: cfg.accounts, birdOk,
     secrets: { hasAuthToken: !!s.auth_token, hasCt0: !!s.ct0, hasTgBotToken: !!s.tg_bot_token },
   });
 });
@@ -219,6 +223,15 @@ app.post('/api/control', requireAuth, requireCsrf, (req, res) => {
   state.log(cfg.paused ? '监控已暂停' : '监控已恢复');
   res.json({ ok: true, paused: cfg.paused });
 });
+
+// bird 路径自动检测（单飞）
+let detectInFlight = false;
+app.post('/api/detect-bird', requireAuth, requireCsrf, wrap(async (req, res) => {
+  if (detectInFlight) return res.status(429).json({ found: false, error: '检测进行中，请稍候' });
+  detectInFlight = true;
+  try { res.json(await bird.detectBird()); }
+  finally { detectInFlight = false; }
+}));
 
 // test 端点：单飞，防止认证后并发派生大量子进程/出站请求（子进程风暴）
 let birdTestInFlight = false;

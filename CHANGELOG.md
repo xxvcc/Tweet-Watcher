@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is inspired by Keep a Changelog.
 
+## [3.2.0] - 2026-07-09
+
+Web panel redesigned as a monitoring cockpit, plus theme switching and bird-path auto-detection. The backend gains read-only per-account metrics to power the dashboard; monitoring and push behavior are unchanged.
+
+### Added
+- **Monitoring-cockpit panel**: the panel opens on a live dashboard instead of a config form — per-account status cards (status light, last check / last push, most-recent pushed tweet, a push-count sparkline, and a next-check countdown), a top metrics strip (accounts, pushes today, uptime, next check), and a real-time activity feed. All configuration moved into a slide-over Settings drawer.
+- **Theme switching**: dark / light / follow-system toggle in the header, remembered across sessions; auto-follows the OS when set to system.
+- **bird path auto-detection**: a detect button (and auto-detect when the configured path is missing) locates the bird binary via common locations and `which`, confirming it with `--version`; falls back to an install hint or manual entry. New `POST /api/detect-bird` (auth + CSRF, single-flight) and a `birdOk` flag on `/api/config`.
+- Read-only per-account metrics on `/api/status`: pushes-today counter, per-account total pushes, last-pushed timestamp, last pushed tweet preview, and recent per-check push history (for the sparkline).
+
+### Changed
+- Secret fields (auth_token / ct0 / bot token) no longer use `type=password` (which made browser password managers autofill the login password); they mask via CSS with a readonly-until-focus guard, show a row of dots when a value is saved and blank when not, and reveal with 👁.
+- Account status cards update in place on each SSE event instead of rebuilding the grid — no flicker, smooth countdown.
+
+### Fixed
+- Activity feed no longer shows duplicate rows after an SSE reconnect (log lines de-duplicated by timestamp).
+- Never-checked accounts show "待检查" instead of a misleading "0:00" with a full progress bar.
+- The "pushes today" counter rolls over on the display timezone (Asia/Shanghai) rather than UTC.
+- Bird `--version` output is rendered via textContent, not innerHTML (defense-in-depth against HTML injection in the hint).
+
+Verified with a jsdom end-to-end harness (login → dashboard render → SSE → settings → detect → save, 18/18) and an adversarial self-review of the diff.
+
 ## [3.1.0] - 2026-07-09
 
 Security and correctness hardening release following a full three-round audit. Backward-compatible for existing installs (which already have a password); only fresh setups and password resets now require a one-time setup token.
