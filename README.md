@@ -2,7 +2,9 @@
 
 极简 Node.js 推特监控 → Telegram 推送工具。基于 [bird](https://github.com/steipete/bird) CLI，纯 Node.js 实现，带 Web 管理面板，网页与后台 worker 同进程运行，开箱即用。核心仅需一个 `server.js` 加 `lib/` 下的几个小模块，使用 JSON 文件管理配置，运行依赖仅 `express` + `bcryptjs`。
 
-> 💡 版本 `3.2.0`：**监控台式面板**（账号状态卡片 + 顶部指标 + 实时活动流，配置收进设置抽屉）、深浅双主题、bird 路径自动检测；单 Node 进程同时承载面板与后台监控 worker，用 SSE 实时推送状态与日志、用 systemd 常驻，无前端框架、无构建步骤。
+> 💡 版本 `3.3.0`：第三轮逐行审计后的修复版 —— 修好了「局部保存配置会清空账号列表」「置顶推文每 200 条被重推一次」「Nginx 只设 `X-Real-IP` 导致登录限流退化为全局单桶」等 20 处问题，详见 [CHANGELOG](CHANGELOG.md)。功能面延续 3.2.0：**监控台式面板**（账号状态卡片 + 顶部指标 + 实时活动流，配置收进设置抽屉）、深浅双主题、bird 路径自动检测；单 Node 进程同时承载面板与后台监控 worker，用 SSE 实时推送状态与日志、用 systemd 常驻，无前端框架、无构建步骤。
+>
+> ⚠️ **从 3.2.x 升级请务必同步更新 Nginx 配置**：把 `proxy_set_header X-Real-IP $remote_addr;` 换成 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`，否则登录限流形同虚设（见[生产部署](#6-生产部署systemd--nginx)）。
 
 ## ✨ 功能
 
@@ -15,7 +17,7 @@
 - 🔒 密码保护 + 安全加固（bcrypt、无状态签名会话、CSRF、登录限流、防敏感字段回显、data 目录隔离）
 - 🧠 智能去重（ID 集合，首次运行不推送旧推文）
 - ♻️ 每账号独立设置拉取条数和检查频率，保存后下一轮自动热加载，无需重启
-- 🔁 推送失败自动重试（最多 3 次，每次间隔 2 秒）
+- 🔁 推送失败自动重试（最多 3 次；间隔取 2 秒与 Telegram `retry_after` 的较大值，上限 60 秒，超限转为全局退避）
 - ✂️ 超长推文自动截断（>4000 字符），避免 Telegram API 报错
 - 📋 Web 端实时查看运行日志（SSE 推送，内存环形缓冲 500 条，同时打到 journald）
 - 🚀 纯 Node，无前端框架、无构建步骤
@@ -35,7 +37,7 @@
 
 ```text
 ├── server.js               # 单 Node 进程：Web 面板 + 后台监控 worker
-├── package.json            # 依赖与启动脚本（version 3.0.0）
+├── package.json            # 依赖与启动脚本
 ├── lib/
 │   ├── config.js           # config.json / secrets.json 读写与字段校验
 │   ├── auth.js             # bcrypt 密码、HMAC 签名会话、CSRF 令牌
@@ -179,8 +181,10 @@ server {
         proxy_pass http://127.0.0.1:8787;
         proxy_set_header Host $host;
 
-        # 必须：注入真实客户端 IP，登录限流以此为准（客户端无法伪造）
-        proxy_set_header X-Real-IP $remote_addr;
+        # 必须：登录限流按 req.ip 分桶，而 Express 的 trust proxy 只读 X-Forwarded-For。
+        # $proxy_add_x_forwarded_for 会把真实连接 IP 追加到客户端自带的 XFF 之后，
+        # 服务端取最右侧非可信地址，因此客户端无法伪造。
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
         # SSE 实时日志：关闭缓冲，保持长连接
@@ -190,7 +194,9 @@ server {
 }
 ```
 
-> ⚠️ `X-Real-IP` 由 Nginx 无条件覆盖为真实连接 IP，登录限流依赖它；服务端只信任回环代理（`trust proxy = loopback`），因此请务必只从本机 Nginx 反代，不要让面板端口直接对公网开放。
+> ⚠️ **不要漏掉 `X-Forwarded-For`。** 服务端只信任回环代理（`trust proxy = loopback`）且只读 `X-Forwarded-For`；若 Nginx 没有注入它（例如只设了 `X-Real-IP`），所有客户端的 `req.ip` 都会塌缩成 `127.0.0.1`，登录限流退化为**全局单桶** —— 任何人连错 5 次密码就会把所有人一起锁在门外。
+>
+> ⚠️ 面板端口只监听回环，请务必只从本机 Nginx 反代，不要直接对公网开放。
 
 > 💡 无需 `.htaccess`、也无需把 `data/` 放到 Web 根下再做防护：Node 只静态伺服 `public/` 目录，`data/` 本就在站点根之外，永不经 Web 暴露。
 
@@ -257,16 +263,18 @@ server {
 - 首次访问 Web 页面时需设置密码（至少 8 位）
 - 密码以 **bcrypt**（cost 12）哈希存储在 `data/password.json`；兼容旧 `$2y$` 前缀（自动改写为 `$2b$`）
 - 密码使用**异步 bcrypt**（不阻塞事件循环），错误时固定延迟 1 秒响应（防暴力破解）
-- **登录限流**（按 `req.ip`，即 `trust proxy=loopback` 下 Nginx 传入的真实客户端 IP，客户端无法伪造）：连续失败 5 次锁 5 分钟、10 次锁 30 分钟、20 次锁 60 分钟；锁定期满即清零，且限流表有界（惰性回收 + 硬上限，防内存耗尽）
+- **登录限流**（按 `req.ip`，即 `trust proxy=loopback` 下 Nginx 经 `X-Forwarded-For` 传入的真实客户端 IP，客户端无法伪造）：累计失败 5 次锁 5 分钟、10 次锁 30 分钟、20 次锁 60 分钟。锁定期满只放行下一次尝试而**不清零计数**，因此升级档位真正可达；计数在**登录成功**或**1 小时无新失败**时清除。限流表有界（惰性回收 + 硬上限，防内存耗尽）
 - **首次设置令牌**：无密码时服务端启动会在日志打印一次性 `setup_token`，`/api/setup` 必须携带它才能设密，杜绝公网面板的无认证首次抢注（TOFU）。若 `password.json` 损坏，`hasPassword` 判定为 fail-closed（视为已设置），不会重开无认证设置
 - **会话**：HMAC-SHA256 签名的无状态 Cookie（有效期 7 天），内含 epoch —— 登出或改密会 `bump` epoch，使所有已签发会话**立即失效**；畸形 Cookie/会话一律返回 401（不再有 500 堆栈泄露）
 - **CSRF 双提交令牌**：所有改动型接口校验，`timingSafeEqual` 常量时间比较；`/api/logout` 仅在持有效会话+CSRF 时才全局吊销，未认证请求无法借此制造登出 DoS
-- **安全响应头**：CSP、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy`，并关闭 `X-Powered-By`
+- **安全响应头**：CSP（脚本与样式均严格同源，无 `unsafe-inline`；含 `form-action 'none'`）、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy`，并关闭 `X-Powered-By`；所有 `/api/*` 响应带 `Cache-Control: no-store`
 - 凭据（`auth_token` / `ct0` / `tg_bot_token`）在日志输出中自动 redact，替换为 `***`
 - `data/` 目录权限 `0700`、文件写入 `0600`，位于站点根之外且永不被静态伺服（Node 只 `express.static` 伺服 `public/`）
 - 文件写入使用原子替换（临时文件 + `fsync` + `rename` + 目录 `fsync`），防止崩溃/断电导致半写损坏；读取时区分「文件不存在」与「存在但损坏」，损坏不静默当作「未设置」
-- `bird_path` 只接受绝对路径、限定字符集、无 `..`、且文件名必须为 `bird`——防止已认证用户将其改指向 `/bin/sh` 等宿主二进制
+- `bird_path` 只接受绝对路径、限定字符集、无 `..`、且文件名必须为 `bird`——防止已认证用户将其改指向 `/bin/sh` 等宿主二进制。注意该校验拦不住一个**名为 `bird` 的符号链接**指向别处（利用它需要已认证 + 对宿主有写权限）
 - 子进程调用 bird 带 30 秒超时保护，防止挂起
+
+> ⚠️ **已知残留风险：Twitter 凭据经命令行参数传给 bird。** bird 0.8.0 只接受 `--auth-token` / `--ct0` 参数或从浏览器提取 cookie，不支持环境变量、stdin 或凭据文件，因此本项目无法规避。在 Linux 上，`/proc/<pid>/cmdline` 默认对同机其它用户可读，这意味着**同一台机器上的其他用户可以读到你的 X 会话 Cookie**。缓解：以独占用户运行本服务；在多租户主机上以 `hidepid=2` 挂载 `/proc`（`mount -o remount,hidepid=2 /proc`）。
 - 忘记密码时，需**停服 → 删除 `password.json` → 重启**，重启后从服务端日志读取新的一次性 `setup_token` 再走首次设置：
 
 ```bash
@@ -308,16 +316,18 @@ X链接：https://x.com/elonmusk/status/1234567890
 |------|------|
 | ID 集合 | 每个账号维护已推送的推文 ID 列表，持久化到 `sent_ids.json` |
 | 首次静默 | 账号首次运行只记录当前推文 ID，不推送旧推文 |
-| 集合上限 | 每个账号最多保留 200 条 ID，超出后保留最新的部分 |
+| 集合上限 | 每个账号最多保留 200 条 ID |
+| 置顶推保护 | 淘汰时优先保留"仍出现在本次拉取窗口内"的 ID —— 否则长期置顶的推文会被挤出去重表并每满 200 条重推一次 |
 | 孤立清理 | 从配置中删除账号后，worker 自动清理其去重记录、计时与状态 |
 | 转推识别 | 转推标记为 🔁，与原创推文（🐦）区分 |
-| 即时落盘 | 每条推送成功后立即写盘 `sent_ids.json`，避免崩溃后重复推送 |
+| 按账号落盘 | 每个账号一轮检查推送完毕后统一写盘 `sent_ids.json`（而非每条一次），降低写放大；语义仍是 at-least-once —— 崩溃至多导致"已发未记"，下轮重发 |
+| 损坏即重建 | `sent_ids.json` 整体损坏或某账号的值不是数组时，按"首次运行"处理（重建基线、不推送），而不是把整条时间线当新推文全量推出 |
 
-推送失败时最多重试 3 次、每次间隔 2 秒；全部失败则记录日志、保留该 ID 未推状态，下轮仍可再试。
+推送失败时最多重试 3 次，间隔取 `2 秒` 与 Telegram `retry_after` 的较大值。若 `retry_after` 超过 60 秒（洪泛限制），worker **不会在 tick 内长睡**（那会拖停整个调度），而是设置一个全局退避窗口，把推文顺延到退避结束后再发。全部失败则记录日志、保留该 ID 未推状态，下轮仍可再试。
 
 ## 📋 日志查看
 
-**Web 页面：** 在「监控状态」板块点击「📋 实时日志」。日志通过 SSE（`/api/stream`）从服务端实时推送到面板，来源是内存里的环形缓冲（最多保留 500 条）。
+**Web 页面：** 监控台右侧的「实时活动」列即为日志流。日志通过 SSE（`/api/stream`）从服务端实时推送到面板，来源是内存里的环形缓冲（最多保留 500 条）。
 
 **命令行 / 服务器：** 日志同时写到进程 stdout，交给 systemd/journald 留存与轮转：
 
@@ -330,6 +340,15 @@ journalctl -u tweet-watcher -f
 ```
 
 > 💡 本项目不再写 `data/cron.log` 文件，也没有 2MB 上限那套自建日志轮转 —— 落盘与轮转交给 journald 处理。
+
+### 供外部脚本使用的接口
+
+面板本身走 SSE，不调用下面两个接口；它们是留给健康检查与日志抓取的（均需携带有效会话 Cookie）：
+
+| 接口 | 用途 |
+|------|------|
+| `GET /api/status` | 运行状态 + 每账号指标；`healthy` 表示 worker 在 60 秒内有过心跳（长 tick 期间也会持续更新，不会误判） |
+| `GET /api/logs` | 取最近 200 条日志（JSON 数组） |
 
 ## 🔄 迁移
 

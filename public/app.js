@@ -24,12 +24,19 @@
     localStorage.setItem(THEME_KEY, next); applyTheme(next);
   };
 
+  // 这几个接口的 401 是业务语义（密码错误 / 未登录探测），不应触发跳转
+  const KEEP_ON_401 = new Set(['api/session', 'api/login', 'api/setup']);
+
   async function api(method, path, body) {
     const opts = { method, credentials: 'same-origin', headers: {} };
     if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
     if (method !== 'GET') opts.headers['x-csrf'] = getCookie('tw_csrf');
     const res = await fetch(path, opts);
     let data = null; try { data = await res.json(); } catch (_) {}
+    if (res.status === 401 && !KEEP_ON_401.has(path)) {
+      location.reload(); // 会话已失效：回登录页，而不是让面板停在过期数据上
+      throw new Error('会话已失效，请重新登录');
+    }
     if (!res.ok) throw new Error((data && data.error) || ('HTTP ' + res.status));
     return data || {};
   }
@@ -342,7 +349,12 @@
       try { statusData = JSON.parse(e.data); statusData.accounts = statusData.accounts || {}; renderAll(); } catch (_) {}
     });
     es.addEventListener('log', (e) => { try { pushFeed(JSON.parse(e.data)); } catch (_) {} });
-    es.onerror = () => { /* EventSource 自动重连 */ };
+    es.onerror = () => {
+      // 只有网络层断开（readyState=CONNECTING）浏览器才会自动重连。
+      // 响应非 200 或 Content-Type 不是 text/event-stream（如会话失效后的 401）会让
+      // EventSource 永久关闭，此时必须刷新回登录页，否则面板静默冻结在旧数据上。
+      if (es.readyState === EventSource.CLOSED) location.reload();
+    };
   }
 
   // ---------- 设置抽屉 ----------
@@ -399,11 +411,17 @@
     input.parentNode.insertBefore(wrap, input); wrap.appendChild(input);
     const btn = document.createElement('button');
     btn.type = 'button'; btn.className = 'pw-reveal'; btn.textContent = '👁'; btn.setAttribute('aria-label', '显示/隐藏');
-    const isSecret = input.classList.contains('secret');
+    let isSecret = input.classList.contains('secret');
     if (isSecret) {
       input.setAttribute('readonly', '');
       const unlock = () => input.removeAttribute('readonly');
       input.addEventListener('focus', unlock); input.addEventListener('mousedown', unlock);
+      // .secret 字段是 type=text + CSS 打码（避免密码管理器自动填充站点登录密码）。
+      // 若 -webkit-text-security 不被支持、或样式表没加载成功，凭据就会明文显示；
+      // 此时退回 type=password —— readonly-until-focus 仍在，自动填充风险远小于明文暴露。
+      const cs = getComputedStyle(input);
+      const masked = (cs.getPropertyValue('-webkit-text-security') || cs.webkitTextSecurity || '') === 'disc';
+      if (!masked) { input.classList.remove('secret'); input.type = 'password'; isSecret = false; }
     }
     const showing = () => isSecret ? input.classList.contains('reveal') : input.type === 'text';
     const setShow = (on) => { if (isSecret) input.classList.toggle('reveal', on); else input.type = on ? 'text' : 'password'; btn.classList.toggle('on', on); };

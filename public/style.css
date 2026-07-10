@@ -32,6 +32,9 @@ body{ background:var(--bg); color:var(--ink); min-height:100vh; padding:22px 18p
 .mono,input{ font-family:ui-monospace,'SFMono-Regular',Consolas,monospace; }
 .tnum{ font-variant-numeric:tabular-nums; }
 .hidden{ display:none !important; }
+/* 间距工具类：取代 index.html 里的内联 style，使 CSP 可去掉 style-src 'unsafe-inline' */
+.mt-12{ margin-top:12px; }
+.mt-16{ margin-top:16px; }
 .wrap{ max-width:1080px; margin:0 auto; }
 a{ color:var(--accent); text-decoration:none; }
 button{ cursor:pointer; font-family:inherit; }

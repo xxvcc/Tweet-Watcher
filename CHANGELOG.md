@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 The format is inspired by Keep a Changelog.
 
+## [3.3.0] - 2026-07-10
+
+Fixes from a second full line-by-line audit (all ~1800 lines of `server.js`, `lib/`, and `public/`). No feature changes. Every finding below was reproduced before the fix and verified after it.
+
+> ⚠️ **Action required when upgrading from 3.2.x behind Nginx.** Replace `proxy_set_header X-Real-IP $remote_addr;` with `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`. Express's `trust proxy` only reads `X-Forwarded-For`; without it every client's `req.ip` collapses to `127.0.0.1`.
+
+### Security
+- **Login rate limiting was globally shared, not per-IP** (with the Nginx config this project documented). `trust proxy` reads `X-Forwarded-For`, but the documented reverse-proxy snippet only injected `X-Real-IP` — which the server stopped reading in 3.1.0 — so `req.ip` was `127.0.0.1` for every client. Five failed logins by anyone locked out *everyone* for five minutes: an unauthenticated denial of service. Fixed in the documented Nginx config, with a prominent upgrade warning.
+- **Lockout escalation tiers were unreachable dead code.** A blocked request returned 429 *before* `recordFail`, and an expired lockout deleted the counter entirely, so `count` never exceeded 5 — the documented 10-failure (30 min) and 20-failure (60 min) tiers could never trigger, leaving a flat 5-attempts-per-5-minutes forever. An expired lockout now releases the next attempt without clearing the counter; the counter is cleared on successful login or after an hour with no new failures. A six-hour brute-force run now yields ~21 attempts instead of ~360.
+- **Telegram `retry_after` was an unbounded sleep on the scheduler's await chain.** A `retry_after: 86400` (flood wait) would park the worker for a day, holding a concurrency slot and stalling every account. Retry waits are now capped at 60 s; anything longer sets a bounded global backoff window (max 1 h) and defers the tweets instead of sleeping.
+- `cookieSecure` read the raw `x-forwarded-proto` header, bypassing the `trust proxy` decision it was supposed to respect. It now uses `req.secure`.
+- CSP no longer needs `style-src 'unsafe-inline'` (the two inline `style=` attributes moved to CSS classes) and now sets `form-action 'none'`.
+- All `/api/*` responses send `Cache-Control: no-store` (they carry session state and credential-presence flags).
+- Unknown `/api/*` paths return a JSON 404 instead of falling through to the SPA catch-all and returning `200 text/html`.
+- Removed `express.urlencoded` — no route consumed it.
+- `bumpEpoch` now persists the new epoch *before* updating the in-memory cache; previously a failed write left sessions revoked in-process but resurrected them on restart.
+- Exception messages logged from the tick loop and per-account catch are now credential-redacted; the redaction threshold dropped from >6 to >=4 characters.
+- Documented the one risk that cannot be fixed in-repo: bird 0.8.0 accepts credentials only via `--auth-token`/`--ct0` argv (no env, stdin, or credential file), so the X session cookie is visible in `/proc/<pid>/cmdline` to other local users. Mitigation: dedicated user, `hidepid=2`.
+
+### Fixed
+- **A partial config save silently wiped every monitored account.** `POST /api/config` without an `accounts` field normalized `undefined` to `[]` and persisted it — while `bird_path` and `tg_chat_id` correctly kept their previous values on omission, and no warning was emitted. Absent `accounts` now preserves the stored list; a non-array value is rejected with a warning; an explicit `[]` still clears.
+- **A pinned tweet was re-pushed every 200 pushes.** The dedup table evicted by insertion order, but a pinned tweet stays at the top of the fetch window forever, so its baseline ID was eventually pushed out of the 200-entry window and the tweet looked new again. Eviction now retains IDs still present in the current fetch window, and drops accumulated duplicates.
+- **A corrupt `sent_ids.json` entry caused a mass re-push.** If an account's value was not an array, `isFirst` was false (the key existed) while `known` silently degraded to an empty set, so the entire fetched timeline was pushed as new. A non-array value is now treated as a first run (rebuild the baseline, push nothing).
+- **"Pushes today" never rolled over at midnight** unless a tweet happened to be pushed that day; the reset lived only inside `addPush`. It now rolls over on every status read and write.
+- **The panel froze silently when a session expired.** `/api/stream` returns 401, which per spec closes an `EventSource` permanently with no reconnect — but `onerror` was an empty function commented "EventSource auto-reconnects" (true only for network-level drops). The panel now returns to the login page on a closed stream, and any 401 from `api()` does the same.
+- Message truncation at 4000 UTF-16 units could split a surrogate pair, corrupting the trailing emoji into U+FFFD. Truncation now drops a dangling high surrogate.
+- `text: ""` on a media-only tweet no longer swallows the `full_text` fallback (`??` only skips null/undefined); same for the `created_at`/`time` chain. A non-string `url` now falls back to the constructed permalink instead of `String()`-ing an object into the message.
+- The panel's next-check countdown drifted by the duration of a check: the scheduler anchors on check *start*, but the UI was fed the check *end* timestamp. Both now use the start time.
+
+### Performance
+- **Status broadcasts were O(accounts × clients × accounts).** Each `setAccount`/`pushHistory`/`setStatus` re-emitted the entire status object (containing every account) to every SSE client. At the configured maxima (100 accounts, 25 clients) one tick emitted 302 frames and serialized 70 MB. Emissions are now coalesced into one frame per 200 ms window: 1 frame, 0.25 MB — a 99.6% reduction.
+- `lastTickAt` now updates after each account completes, not only when the whole tick finishes, so a long tick (100 accounts × a 30 s bird timeout) no longer reports the worker as unhealthy.
+- The dedup table is written only when at least one tweet was actually pushed.
+- SSE connections with more than 1 MB of unflushed data are dropped rather than buffering without bound.
+
+### Changed
+- `.secret` fields fall back to `type=password` when CSS masking (`-webkit-text-security`) is unsupported or the stylesheet failed to load, instead of rendering credentials in plaintext.
+- Removed dead exports: `store.exists` / `store.dataPath` / `store.ensureDir` / `store.DATA_DIR`, `config.DEFAULT_BIRD` / `config.clampInt`; dropped the unused `timer` binding in the worker.
+- `GET /api/status` and `GET /api/logs` are documented as external health-check / log-scraping endpoints (the panel itself uses SSE only).
+
 ## [3.2.0] - 2026-07-09
 
 Web panel redesigned as a monitoring cockpit, plus theme switching and bird-path auto-detection. The backend gains read-only per-account metrics to power the dashboard; monitoring and push behavior are unchanged.

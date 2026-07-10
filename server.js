@@ -24,14 +24,15 @@ app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'same-origin');
-  // 脚本严格同源（无 unsafe-inline）；样式放行内联属性以兼容 index.html 现有 style="…"
+  // 脚本与样式均严格同源，无 unsafe-inline（index.html 已无内联 style 属性）。
+  // 注意 app.js 里的 el.style.x = … 属 CSSOM 写入，不受 style-src 约束。
   res.setHeader('Content-Security-Policy',
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'none'");
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'");
   next();
 });
 
+// 请求体只接受 JSON：前端全部走 JSON，urlencoded 无消费者，去掉可缩小攻击面
 app.use(express.json({ limit: '256kb' }));
-app.use(express.urlencoded({ extended: false, limit: '256kb' }));
 
 // —— cookie 解析（无第三方依赖）——
 app.use((req, res, next) => {
@@ -49,10 +50,15 @@ app.use((req, res, next) => {
   next();
 });
 
+// API 响应一律不缓存：其中含会话态与凭据存在性，不得被浏览器/中间代理留存
+app.use('/api', (req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+
 // async 路由包装：把 rejected promise 交给统一错误中间件，避免 Express4 下请求永久挂起
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-function cookieSecure(req) { return req.secure || req.headers['x-forwarded-proto'] === 'https'; }
+// 只认 req.secure：它已由 trust proxy 依据可信代理的 X-Forwarded-Proto 推导。
+// 直接读原始头会绕过该信任判定，让任意客户端强制 secure Cookie。
+function cookieSecure(req) { return req.secure; }
 function setAuthCookies(req, res) {
   const secure = cookieSecure(req);
   const maxAge = 7 * 24 * 3600 * 1000;
@@ -103,7 +109,10 @@ function loginBlockedMinutes(ip) {
   if (!r || r.count < 5) return null;
   const lock = r.count >= 20 ? 3600e3 : r.count >= 10 ? 1800e3 : 300e3;
   const rem = lock - (Date.now() - r.last);
-  if (rem <= 0) { loginFails.delete(ip); return null; } // 锁定期满即清零，避免历史失败对合法用户造成持久锁
+  // 锁定期满只放行下一次尝试，不清零 count——否则被锁时 recordFail 不执行、解锁又删表，
+  // count 恒不超过 5，10 次/20 次的升级档位永远不可达。
+  // 计数由这两条路径清除：登录成功（delete）、或 1 小时无新失败（pruneLoginFails 惰性回收）。
+  if (rem <= 0) return null;
   return Math.ceil(rem / 60000);
 }
 function recordFail(ip) {
@@ -175,9 +184,18 @@ app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
   const b = req.body || {};
   const cur = cfgmod.getConfig();
   const warnings = [];
-  const accounts = cfgmod.normalizeAccounts(b.accounts);
-  if (Array.isArray(b.accounts) && accounts.length < b.accounts.length) {
-    warnings.push(`部分账号被忽略（非法用户名/重复/超出上限 ${cfgmod.LIMITS.MAX_ACCOUNTS}）`);
+  // 与 bird_path / tg_chat_id 一致的局部更新语义：字段缺省即保留原值。
+  // 否则一个只改 tg_chat_id 的请求会把 accounts 静默清空。
+  let accounts = cur.accounts;
+  if (b.accounts !== undefined) {
+    if (!Array.isArray(b.accounts)) {
+      warnings.push('accounts 必须是数组，已保留原值');
+    } else {
+      accounts = cfgmod.normalizeAccounts(b.accounts);
+      if (accounts.length < b.accounts.length) {
+        warnings.push(`部分账号被忽略（非法用户名/重复/超出上限 ${cfgmod.LIMITS.MAX_ACCOUNTS}）`);
+      }
+    }
   }
   let bird_path = cur.bird_path;
   if (typeof b.bird_path === 'string' && b.bird_path.trim()) {
@@ -252,6 +270,7 @@ app.post('/api/test/telegram', requireAuth, requireCsrf, wrap(async (req, res) =
 // ===== SSE 实时流（状态 + 日志）=====
 let sseCount = 0;
 const SSE_MAX = 25;
+const SSE_MAX_BUFFER = 1 << 20; // 单连接待发缓冲上限 1MB
 app.get('/api/stream', requireAuth, (req, res) => {
   if (sseCount >= SSE_MAX) return res.status(503).end(); // 连接数上限，防 fd/内存耗尽
   sseCount++;
@@ -259,22 +278,40 @@ app.get('/api/stream', requireAuth, (req, res) => {
     'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache',
     Connection: 'keep-alive', 'X-Accel-Buffering': 'no',
   });
-  const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  send('status', state.getStatus());
-  for (const l of state.getLogs(50)) send('log', l);
+
+  let closed = false;
+  let ka = null;
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    if (ka) clearInterval(ka);
+    state.bus.off('status', onStatus); state.bus.off('log', onLog);
+    sseCount--;
+  };
+  const send = (event, data) => {
+    if (closed) return;
+    // 慢客户端不得让待发数据在进程内无界堆积：超过阈值直接断开，由前端重连
+    if (res.writableLength > SSE_MAX_BUFFER) { cleanup(); try { res.end(); } catch (_) {} return; }
+    try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch (_) { cleanup(); }
+  };
   const onStatus = (s) => send('status', s);
   const onLog = (l) => send('log', l);
+
+  send('status', state.getStatus());
+  for (const l of state.getLogs(50)) send('log', l);
   state.bus.on('status', onStatus);
   state.bus.on('log', onLog);
-  let closed = false;
-  const cleanup = () => { if (closed) return; closed = true; clearInterval(ka); state.bus.off('status', onStatus); state.bus.off('log', onLog); sseCount--; };
-  const ka = setInterval(() => {
+
+  ka = setInterval(() => {
     // 会话被登出/改密/过期后主动断流，避免向已吊销会话持续推送
     if (!auth.verifySession(req.cookies.tw_sess)) { cleanup(); try { res.end(); } catch (_) {} return; }
-    try { res.write(': ping\n\n'); } catch (_) {}
+    try { res.write(': ping\n\n'); } catch (_) { cleanup(); }
   }, 25000);
   req.on('close', cleanup);
 });
+
+// 未知接口返回 JSON 404，而不是被下面的 SPA 兜底路由回一个 200 的 HTML
+app.use('/api', (req, res) => res.status(404).json({ ok: false, error: '接口不存在' }));
 
 // ===== 静态面板 =====
 app.use(express.static(path.join(__dirname, 'public')));
