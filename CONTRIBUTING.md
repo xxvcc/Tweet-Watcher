@@ -2,7 +2,7 @@
 
 感谢你关注 [`Tweet-Watcher`](README.md)。本项目当前规模不大，但欢迎通过 Issue、Pull Request、文档修正与部署经验分享来帮助完善它。
 
-本项目是单进程 `server.js` 同时承担网页面板与后台 worker 的 Node.js 工具（`package.json` version 3.4.0），请在贡献时以现有 Node 实现为准。
+本项目是单进程 `server.js` 同时承担网页面板与后台 worker 的 Node.js 工具（`package.json` version 3.4.1），请在贡献时以现有 Node 实现为准。
 
 ## 贡献方式
 

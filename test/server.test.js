@@ -26,16 +26,22 @@ test.after(async () => {
   if (server && server.listening) await new Promise((resolve) => server.close(resolve));
 });
 
-test('SPA fallback keeps assets rooted at the application origin', async (t) => {
+test('panel entrypoint keeps assets relative for reverse-proxy subpaths', async (t) => {
   if (listenUnavailable) return t.skip('sandbox does not permit local listen sockets');
-  const response = await fetch(`${base}/nested/`);
+  const response = await fetch(`${base}/`);
   const html = await response.text();
   assert.equal(response.status, 200);
-  assert.match(html, /href="\/style\.css"/);
-  assert.match(html, /src="\/app\.js"/);
+  assert.match(html, /href="style\.css"/);
+  assert.match(html, /src="app\.js"/);
 
   const script = await fetch(`${base}/app.js`);
   assert.match(script.headers.get('content-type') || '', /javascript/);
+});
+
+test('unknown frontend paths return 404 instead of an invalid asset-base fallback', async (t) => {
+  if (listenUnavailable) return t.skip('sandbox does not permit local listen sockets');
+  const response = await fetch(`${base}/nested/`);
+  assert.equal(response.status, 404);
 });
 
 test('unknown API routes stay JSON 404 responses with security headers', async (t) => {

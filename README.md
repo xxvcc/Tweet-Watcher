@@ -2,7 +2,7 @@
 
 极简 Node.js 推特监控 → Telegram 推送工具。基于 [bird](https://github.com/steipete/bird) CLI，纯 Node.js 实现，带 Web 管理面板，网页与后台 worker 同进程运行，开箱即用。核心仅需一个 `server.js` 加 `lib/` 下的几个小模块，使用 JSON 文件管理配置，运行依赖仅 `express` + `bcryptjs`。
 
-> 💡 版本 `3.4.0`：新一轮三遍审计修复版，重点加固 worker 调度与去重、认证并发、配置持久化、Telegram 退避、bird 输出校验，以及多标签页与 SSE 恢复；新增 75 项自动化回归测试。详见 [CHANGELOG](CHANGELOG.md)。功能面延续 3.2.0：**监控台式面板**（账号状态卡片 + 顶部指标 + 实时活动流，配置收进设置抽屉）、深浅双主题、bird 路径自动检测；单 Node 进程同时承载面板与后台监控 worker，用 SSE 实时推送状态与日志、用 systemd 常驻，无前端框架、无构建步骤。
+> 💡 版本 `3.4.1`：新一轮三遍审计修复版，重点加固 worker 调度与去重、认证并发、配置持久化、Telegram 退避、bird 输出校验，以及多标签页与 SSE 恢复；新增 76 项自动化回归测试，并修复反向代理子路径部署。详见 [CHANGELOG](CHANGELOG.md)。功能面延续 3.2.0：**监控台式面板**（账号状态卡片 + 顶部指标 + 实时活动流，配置收进设置抽屉）、深浅双主题、bird 路径自动检测；单 Node 进程同时承载面板与后台监控 worker，用 SSE 实时推送状态与日志、用 systemd 常驻，无前端框架、无构建步骤。
 >
 > ⚠️ **从 3.2.x 升级请务必同步更新 Nginx 配置**：把 `proxy_set_header X-Real-IP $remote_addr;` 换成 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`，否则登录限流形同虚设（见[生产部署](#6-生产部署systemd--nginx)）。
 

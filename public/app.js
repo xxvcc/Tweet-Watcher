@@ -31,7 +31,7 @@
   };
 
   // 这几个接口的 401 是业务语义（密码错误 / 未登录探测），不应触发跳转
-  const KEEP_ON_401 = new Set(['/api/session', '/api/login', '/api/setup']);
+  const KEEP_ON_401 = new Set(['api/session', 'api/login', 'api/setup']);
 
   async function api(method, path, body) {
     const opts = { method, credentials: 'same-origin', headers: {} };
@@ -118,9 +118,9 @@
         if (pw !== $('auth-pw2').value) throw new Error('两次密码不一致');
         const token = $('auth-setup-token').value.trim();
         if (!token) throw new Error('请输入首次设置令牌（见服务端日志）');
-        await api('POST', '/api/setup', { password: pw, setup_token: token });
+        await api('POST', 'api/setup', { password: pw, setup_token: token });
       } else {
-        await api('POST', '/api/login', { password: pw });
+        await api('POST', 'api/login', { password: pw });
       }
       $('auth-pw').value = ''; $('auth-pw2').value = ''; $('auth-setup-token').value = '';
       // setup 已经成功后，即使随后加载面板失败，也不能把用户留在一个永远只会返回
@@ -188,7 +188,7 @@
     if (btn) btn.disabled = true;
     if (btn && !auto) { old = btn.textContent; btn.textContent = '检测中…'; }
     try {
-      const r = await api('POST', '/api/detect-bird', {});
+      const r = await api('POST', 'api/detect-bird', {});
       // 检测可能持续数十秒。期间的手工输入、保存回载或关闭抽屉都代表原上下文已失效，
       // 旧响应不得再覆盖当前路径或更新与当前配置不符的提示。
       const stale = configSaveInFlight
@@ -240,7 +240,7 @@
 
   async function loadConfig(fromStream) {
     const sequence = ++configLoadSequence;
-    const c = await api('GET', '/api/config');
+    const c = await api('GET', 'api/config');
     const loadedRevision = Number.isSafeInteger(c.configRevision) ? c.configRevision : null;
     const signature = configSignature(c);
     // GET 发出后用户仍可能开始编辑或保存；流同步不能在响应回来时覆盖这些新输入。
@@ -515,7 +515,7 @@
   function connectStream() {
     if (es) es.close();
     let source;
-    try { source = new EventSource('/api/stream'); }
+    try { source = new EventSource('api/stream'); }
     catch (_) {
       es = null;
       const pill = $('livepill'), txt = $('live-text');
@@ -546,7 +546,7 @@
       if (source.readyState !== EventSource.CLOSED || streamProbeInFlight) return;
       streamProbeInFlight = true;
       let authed = null;
-      try { authed = !!(await api('GET', '/api/session')).authed; } catch (_) {}
+      try { authed = !!(await api('GET', 'api/session')).authed; } catch (_) {}
       finally { streamProbeInFlight = false; }
       if (authed === false) location.reload();
       else scheduleStreamReconnect();
@@ -693,7 +693,7 @@
     configSaveInFlight = true;
     setConfigEditorDisabled(true);
     try {
-      const r = await api('POST', '/api/config', collectPayload());
+      const r = await api('POST', 'api/config', collectPayload());
       $('auth_token').value = ''; $('ct0').value = ''; $('tg_bot_token').value = '';
       ['auth_token', 'ct0', 'tg_bot_token'].forEach(refreshReveal);
       await loadConfig();
@@ -723,7 +723,7 @@
       // 无改动时不要做一次空保存：空保存也会推进 revision 并取消 worker 在途任务。
       const saved = await saveDraftForTest();
       if (saved.warnings && saved.warnings.length) throw new Error('配置未完全保存：' + saved.warnings.join('；'));
-      const r = await api('POST', '/api/test/bird', {}); toast((r.ok ? '✅ ' : '❌ ') + r.message, r.ok ? 'ok' : 'err');
+      const r = await api('POST', 'api/test/bird', {}); toast((r.ok ? '✅ ' : '❌ ') + r.message, r.ok ? 'ok' : 'err');
     }
     catch (e) { toast(e.message, 'err'); } finally { btn.disabled = false; btn.textContent = old; }
   };
@@ -732,7 +732,7 @@
     try {
       const saved = await saveDraftForTest();
       if (saved.warnings && saved.warnings.length) throw new Error('配置未完全保存：' + saved.warnings.join('；'));
-      const r = await api('POST', '/api/test/telegram', {}); toast((r.ok ? '✅ ' : '❌ ') + r.message, r.ok ? 'ok' : 'err');
+      const r = await api('POST', 'api/test/telegram', {}); toast((r.ok ? '✅ ' : '❌ ') + r.message, r.ok ? 'ok' : 'err');
     }
     catch (e) { toast(e.message, 'err'); } finally { btn.disabled = false; btn.textContent = old; }
   };
@@ -743,7 +743,7 @@
     controlInFlight = true;
     $('btn-pause').disabled = true; $('btn-resume').disabled = true;
     try {
-      const r = await api('POST', '/api/control', { action });
+      const r = await api('POST', 'api/control', { action });
       statusData.paused = !!r.paused;
       renderTop();
     } catch (e) { toast(e.message, 'err'); }
@@ -770,7 +770,7 @@
       if ([...nextPassword].length < 8) throw new Error('新密码至少 8 位');
       if (nextPassword !== $('new_pw2').value) throw new Error('两次新密码不一致');
       btn.disabled = true;
-      await api('POST', '/api/password', { old_password: $('old_pw').value, new_password: $('new_pw').value });
+      await api('POST', 'api/password', { old_password: $('old_pw').value, new_password: $('new_pw').value });
       clearPasswordForm();
       toast('✅ 密码已修改');
     } catch (e) { toast(e.message, 'err'); }
@@ -781,7 +781,7 @@
     const btn = $('logout');
     if (btn.disabled) return;
     btn.disabled = true;
-    try { await api('POST', '/api/logout'); location.reload(); }
+    try { await api('POST', 'api/logout'); location.reload(); }
     catch (e) { toast('登出失败：' + e.message, 'err'); btn.disabled = false; }
   };
 
@@ -793,7 +793,7 @@
   // ---------- 启动 ----------
   (async function init() {
     try {
-      const s = await api('GET', '/api/session');
+      const s = await api('GET', 'api/session');
       if (!s.hasPassword) showAuth(true);
       else if (!s.authed) showAuth(false);
       else await startPanel();

@@ -434,7 +434,7 @@ app.use('/api', (req, res) => res.status(404).json({ ok: false, error: '接口�
 
 // ===== 静态面板 =====
 app.use(express.static(path.join(__dirname, 'public')));
-app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+// 面板没有客户端路由。未知页面返回 404，避免深路径错误解析相对静态资源。
 
 // ===== 统一错误处理：绝不回传堆栈/绝对路径 =====
 app.use((err, req, res, next) => {

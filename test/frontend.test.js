@@ -225,9 +225,9 @@ test('same-content remote revision preserves a local draft and advances its save
   let config = baseConfig(10);
   let posted = null;
   const app = await loadApp(async (url, opts) => {
-    if (url === '/api/session') return response({ hasPassword: true, authed: true });
-    if (url === '/api/config' && (!opts.method || opts.method === 'GET')) return response(config);
-    if (url === '/api/config' && opts.method === 'POST') {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config' && (!opts.method || opts.method === 'GET')) return response(config);
+    if (url === 'api/config' && opts.method === 'POST') {
       posted = JSON.parse(opts.body);
       config = baseConfig(12, { bird_path: posted.bird_path });
       return response({ ok: true, warnings: [] });
@@ -259,14 +259,14 @@ test('an SSE revision received during save is reloaded after the save completes'
   const staleGetStarted = new Promise((resolve) => { staleGetStartedResolve = resolve; });
   const staleGet = new Promise((resolve) => { resolveStaleGet = resolve; });
   const app = await loadApp(async (url, opts) => {
-    if (url === '/api/session') return response({ hasPassword: true, authed: true });
-    if (url === '/api/config' && (!opts.method || opts.method === 'GET')) {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config' && (!opts.method || opts.method === 'GET')) {
       getCount++;
       if (getCount === 1) return response(baseConfig(10));
       if (getCount === 2) { staleGetStartedResolve(); return staleGet; }
       return response(baseConfig(12, { bird_path: '/remote/bird' }));
     }
-    if (url === '/api/config' && opts.method === 'POST') return response({ ok: true, warnings: [] });
+    if (url === 'api/config' && opts.method === 'POST') return response({ ok: true, warnings: [] });
     throw new Error(`unexpected request: ${opts.method || 'GET'} ${url}`);
   });
 
@@ -291,8 +291,8 @@ test('a synchronous EventSource construction failure leaves a usable panel and s
     constructor() { throw new Error('EventSource unavailable'); }
   }
   const app = await loadApp(async (url) => {
-    if (url === '/api/session') return response({ hasPassword: true, authed: true });
-    if (url === '/api/config') return response(baseConfig());
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
     throw new Error(`unexpected request: ${url}`);
   }, { EventSource: BrokenEventSource });
   assert.equal(app.ids.get('auth').classList.contains('hidden'), true);
@@ -304,9 +304,9 @@ test('a late bird detection result cannot overwrite a reopened or manually edite
   let resolveDetection;
   const pendingDetection = new Promise((resolve) => { resolveDetection = resolve; });
   const app = await loadApp(async (url, opts) => {
-    if (url === '/api/session') return response({ hasPassword: true, authed: true });
-    if (url === '/api/config') return response(baseConfig());
-    if (url === '/api/detect-bird' && opts.method === 'POST') return pendingDetection;
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
+    if (url === 'api/detect-bird' && opts.method === 'POST') return pendingDetection;
     throw new Error(`unexpected request: ${opts.method || 'GET'} ${url}`);
   });
   app.ids.get('btn-settings').onclick();
@@ -322,21 +322,21 @@ test('a late bird detection result cannot overwrite a reopened or manually edite
 
 test('configuration tests do not perform a no-op save', async () => {
   const app = await loadApp(async (url) => {
-    if (url === '/api/session') return response({ hasPassword: true, authed: true });
-    if (url === '/api/config') return response(baseConfig());
-    if (url === '/api/test/bird') return response({ ok: true, message: 'ok' });
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
+    if (url === 'api/test/bird') return response({ ok: true, message: 'ok' });
     throw new Error(`unexpected request: ${url}`);
   });
   await app.ids.get('btn-test-bird').onclick();
-  assert.equal(app.requests.filter((r) => r.url === '/api/config' && r.opts.method === 'POST').length, 0);
-  assert.equal(app.requests.filter((r) => r.url === '/api/test/bird').length, 1);
+  assert.equal(app.requests.filter((r) => r.url === 'api/config' && r.opts.method === 'POST').length, 0);
+  assert.equal(app.requests.filter((r) => r.url === 'api/test/bird').length, 1);
 });
 
 test('successful first setup falls back to login mode if panel loading fails', async () => {
   const app = await loadApp(async (url) => {
-    if (url === '/api/session') return response({ hasPassword: false, authed: false });
-    if (url === '/api/setup') return response({ ok: true });
-    if (url === '/api/config') throw new Error('configuration unavailable');
+    if (url === 'api/session') return response({ hasPassword: false, authed: false });
+    if (url === 'api/setup') return response({ ok: true });
+    if (url === 'api/config') throw new Error('configuration unavailable');
     throw new Error(`unexpected request: ${url}`);
   });
   app.ids.get('auth-pw').value = 'password1';
@@ -352,9 +352,9 @@ test('successful first setup falls back to login mode if panel loading fails', a
 
 test('password confirmation blocks typos before any password request', async () => {
   const app = await loadApp(async (url) => {
-    if (url === '/api/session') return response({ hasPassword: true, authed: true });
-    if (url === '/api/config') return response(baseConfig());
-    if (url === '/api/password') throw new Error('password endpoint should not be called');
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
+    if (url === 'api/password') throw new Error('password endpoint should not be called');
     throw new Error(`unexpected request: ${url}`);
   });
   app.ids.get('pw-toggle').onclick();
@@ -362,15 +362,15 @@ test('password confirmation blocks typos before any password request', async () 
   app.ids.get('new_pw').value = 'new-password';
   app.ids.get('new_pw2').value = 'different-password';
   await app.ids.get('btn-chpw').onclick();
-  assert.equal(app.requests.filter((r) => r.url === '/api/password').length, 0);
+  assert.equal(app.requests.filter((r) => r.url === 'api/password').length, 0);
   assert.equal(app.ids.get('toast').textContent, '两次新密码不一致');
 });
 
 test('logout network failure does not pretend success by reloading', async () => {
   const app = await loadApp(async (url) => {
-    if (url === '/api/session') return response({ hasPassword: true, authed: true });
-    if (url === '/api/config') return response(baseConfig());
-    if (url === '/api/logout') throw new Error('network unavailable');
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
+    if (url === 'api/logout') throw new Error('network unavailable');
     throw new Error(`unexpected request: ${url}`);
   });
   await app.ids.get('logout').onclick();

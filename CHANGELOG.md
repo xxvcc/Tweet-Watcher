@@ -6,6 +6,11 @@ The format is inspired by Keep a Changelog.
 
 ## [Unreleased]
 
+## [3.4.1] - 2026-07-26
+
+### Fixed
+- Restored reverse-proxy subpath deployments by keeping static assets, API calls, and SSE connections relative to the panel URL. Unknown frontend paths now return 404 instead of a non-functional HTML fallback with the wrong asset base.
+
 ## [3.4.0] - 2026-07-26
 
 Fixes from a new three-pass audit, with Node's built-in test runner added for regression coverage.
