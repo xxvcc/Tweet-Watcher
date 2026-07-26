@@ -7,11 +7,15 @@ const EventEmitter = require('events');
 let epoch = 1;
 let verifyPassword = async () => false;
 let setPassword = async () => {};
+let hashPassword = async () => '$2b$12$' + 'A'.repeat(53);
+let savePasswordHash = () => {};
 let configWrites = 0;
 let savedConfigs = [];
 let persistedRevision = 3;
 let saveSecrets = () => { configWrites++; };
 let stateLogs = [];
+let configPersisted = true;
+let configRemovals = 0;
 const recordConfig = (config) => {
   configWrites++; savedConfigs.push(config);
   if (Number.isSafeInteger(config.revision)) persistedRevision = config.revision;
@@ -26,6 +30,8 @@ const authMock = {
   verifyPassword: (password) => verifyPassword(password),
   passwordError: () => '',
   setPassword: (...args) => setPassword(...args),
+  hashPassword: (...args) => hashPassword(...args),
+  savePasswordHash: (...args) => savePasswordHash(...args),
   sessionEpoch: () => epoch,
   bumpEpoch: () => { epoch++; },
   makeSession: () => `session-${epoch}`,
@@ -34,7 +40,10 @@ const authMock = {
 
 const configMock = {
   LIMITS: { MAX_ACCOUNTS: 100 },
-  getConfig: () => ({ bird_path: '/usr/bin/bird', tg_chat_id: '1', paused: false, accounts: [], revision: persistedRevision }),
+  getConfig: () => ({
+    bird_path: '/usr/bin/bird', tg_chat_id: '1', paused: false, accounts: [],
+    revision: persistedRevision, persisted: configPersisted,
+  }),
   getSecrets: () => ({ auth_token: '', ct0: '', tg_bot_token: '' }),
   normalizeAccounts: () => [],
   validBirdPath: () => true,
@@ -61,7 +70,10 @@ const stateMock = {
 const moduleMocks = new Map([
   [require.resolve('../lib/auth'), authMock],
   [require.resolve('../lib/config'), configMock],
-  [require.resolve('../lib/store'), { sweepTmp: () => {} }],
+  [require.resolve('../lib/store'), {
+    sweepTmp: () => {},
+    removeJSON: () => { configRemovals++; persistedRevision = 0; },
+  }],
   [require.resolve('../lib/bird'), { detectBird: async () => ({ found: false }) }],
   [require.resolve('../lib/state'), stateMock],
   [require.resolve('../lib/worker'), {
@@ -173,7 +185,7 @@ test('global logout cancels an in-flight password change', { concurrency: false 
     startedResolve();
     return new Promise((resolve) => { release = resolve; });
   };
-  setPassword = async () => { passwordWrites++; };
+  savePasswordHash = () => { passwordWrites++; };
 
   try {
     const changing = fetch(`${base}/api/password`, {
@@ -194,7 +206,44 @@ test('global logout cancels an in-flight password change', { concurrency: false 
     assert.equal(response.headers.get('set-cookie'), null);
     assert.equal(passwordWrites, 0);
   } finally {
-    setPassword = async () => {};
+    savePasswordHash = () => {};
+  }
+});
+
+test('global logout cancels a password change while the new hash is in flight', { concurrency: false }, async (t) => {
+  if (listenUnavailable) return t.skip('sandbox does not permit local listen sockets');
+  let releaseHash;
+  let hashStartedResolve;
+  let passwordWrites = 0;
+  const hashStarted = new Promise((resolve) => { hashStartedResolve = resolve; });
+  verifyPassword = async () => true;
+  hashPassword = () => {
+    hashStartedResolve();
+    return new Promise((resolve) => { releaseHash = resolve; });
+  };
+  savePasswordHash = () => { passwordWrites++; };
+
+  try {
+    const changing = fetch(`${base}/api/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: 'tw_sess=x; tw_csrf=y', 'x-csrf': 'y' },
+      body: JSON.stringify({ old_password: 'old-password', new_password: 'new-password' }),
+    });
+    await hashStarted;
+    const logout = await fetch(`${base}/api/logout`, {
+      method: 'POST',
+      headers: { Cookie: 'tw_sess=x; tw_csrf=y', 'x-csrf': 'y' },
+    });
+    assert.equal(logout.status, 200);
+
+    releaseHash('$2b$12$' + 'A'.repeat(53));
+    const response = await changing;
+    assert.equal(response.status, 409);
+    assert.equal(response.headers.get('set-cookie'), null);
+    assert.equal(passwordWrites, 0);
+  } finally {
+    hashPassword = async () => '$2b$12$' + 'A'.repeat(53);
+    savePasswordHash = () => {};
   }
 });
 
@@ -225,6 +274,23 @@ test('SSE log frames carry IDs and resume after Last-Event-ID', { concurrency: f
   } finally {
     stateLogs = [];
     if (reader) await reader.cancel();
+  }
+});
+
+test('a heartbeat left in the future after clock rollback is not reported healthy', { concurrency: false }, async (t) => {
+  if (listenUnavailable) return t.skip('sandbox does not permit local listen sockets');
+  const originalNow = Date.now;
+  try {
+    status.running = true;
+    status.lastTickAt = 100000;
+    Date.now = () => 50000;
+    const response = await fetch(`${base}/api/status`, { headers: { Cookie: 'tw_sess=x' } });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).healthy, false);
+  } finally {
+    Date.now = originalNow;
+    delete status.running;
+    delete status.lastTickAt;
   }
 });
 
@@ -301,6 +367,31 @@ test('secret write failures roll back both config content and its persistent rev
     assert.equal(savedConfigs[0].revision, 4);
     assert.equal(savedConfigs[1].revision, 3);
   } finally {
+    saveSecrets = () => { configWrites++; };
+  }
+});
+
+test('a failed first secret write restores the absence of config.json', { concurrency: false }, async (t) => {
+  if (listenUnavailable) return t.skip('sandbox does not permit local listen sockets');
+  persistedRevision = 0;
+  status.configRevision = 0;
+  configPersisted = false;
+  configRemovals = 0;
+  savedConfigs = [];
+  saveSecrets = () => { throw new Error('injected first secrets write failure'); };
+  try {
+    const response = await fetch(`${base}/api/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: 'tw_sess=x; tw_csrf=y', 'x-csrf': 'y' },
+      body: JSON.stringify({ config_revision: 0, accounts: [{ username: 'alice' }] }),
+    });
+    assert.equal(response.status, 500);
+    assert.equal(configRemovals, 1);
+    assert.equal(savedConfigs.length, 1);
+    assert.equal(persistedRevision, 0);
+    assert.equal(status.configRevision, 0);
+  } finally {
+    configPersisted = true;
     saveSecrets = () => { configWrites++; };
   }
 });

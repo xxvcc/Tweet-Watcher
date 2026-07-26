@@ -2,9 +2,9 @@
 
 极简 Node.js 推特监控 → Telegram 推送工具。基于 [bird](https://github.com/steipete/bird) CLI，纯 Node.js 实现，带 Web 管理面板，网页与后台 worker 同进程运行，开箱即用。核心仅需一个 `server.js` 加 `lib/` 下的几个小模块，使用 JSON 文件管理配置，运行依赖仅 `express` + `bcryptjs`。
 
-> 💡 版本 `3.4.1`：新一轮三遍审计修复版，重点加固 worker 调度与去重、认证并发、配置持久化、Telegram 退避、bird 输出校验，以及多标签页与 SSE 恢复；新增 76 项自动化回归测试，并修复反向代理子路径部署。详见 [CHANGELOG](CHANGELOG.md)。功能面延续 3.2.0：**监控台式面板**（账号状态卡片 + 顶部指标 + 实时活动流，配置收进设置抽屉）、深浅双主题、bird 路径自动检测；单 Node 进程同时承载面板与后台监控 worker，用 SSE 实时推送状态与日志、用 systemd 常驻，无前端框架、无构建步骤。
+> 💡 版本 `3.4.2`：再经三轮详细审计，补强凭据隔离、认证竞态、异常 bcrypt 哈希、系统时钟回拨、空时间线水位、首次配置回滚、多标签页保存竞态与静态资源缓存更新；现有 87 项自动化回归测试。详见 [CHANGELOG](CHANGELOG.md)。功能面延续 3.2.0：**监控台式面板**（账号状态卡片 + 顶部指标 + 实时活动流，配置收进设置抽屉）、深浅双主题、bird 路径自动检测；单 Node 进程同时承载面板与后台监控 worker，用 SSE 实时推送状态与日志、用 systemd 常驻，无前端框架、无构建步骤。
 >
-> ⚠️ **从 3.2.x 升级请务必同步更新 Nginx 配置**：把 `proxy_set_header X-Real-IP $remote_addr;` 换成 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`，否则登录限流形同虚设（见[生产部署](#6-生产部署systemd--nginx)）。
+> ⚠️ **从 3.4.1 或更早版本升级，请务必同步更新 systemd 与 Nginx 配置**：生成 `TRUST_PROXY_TOKEN`，并加入文档中的 `EnvironmentFile` 和 Nginx `include`。若从 3.2.x 升级，还需加入 `X-Forwarded-For`（`X-Real-IP` 不能替代它）。缺少共享令牌时服务端会忽略 XFF/XFP，公网请求将共用回环 IP 限流桶，且 HTTPS 登录无法签发 Secure Cookie（见[生产部署](#6-生产部署systemd--nginx)）。
 
 ## ✨ 功能
 
@@ -66,7 +66,7 @@
 
 | 依赖 | 说明 |
 |------|------|
-| Node.js ≥ 20 | 运行环境（实测 v24.18.0）；使用内置 `fetch`、`execFile` 等，无需额外扩展 |
+| Node.js ≥ 22 | 运行环境（实测 v24.18.0，与固定的 bird 0.8.0 要求一致）；使用内置 `fetch`、`execFile` 等，无需额外扩展 |
 | npm 依赖 | 仅 `express` + `bcryptjs`，建议用 `npm ci` 按锁文件安装 |
 | bird CLI | `npm install -g @steipete/bird@0.8.0`，用于拉取推文（当前已验证版本） |
 | Telegram Bot | Bot Token + Chat ID |
@@ -140,7 +140,7 @@ HOST=0.0.0.0 PORT=9000 node server.js
 
 ### 6. 生产部署（systemd + Nginx）
 
-**systemd 常驻** —— 先创建独立、不可登录的服务用户和数据目录。不要复用 Nginx/PHP 的 `www` 用户；bird 当前必须把 Twitter Cookie 放入进程参数，共享 UID 会让同机其他 Web 应用直接读取这些凭据。
+**systemd 常驻** —— 先创建独立、不可登录的服务用户和数据目录。不要复用 Nginx/PHP 的 `www` 用户；独立 UID 同时隔离运行时数据、子进程环境与会话凭据。
 
 ```bash
 useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin tweet-watcher
@@ -149,6 +149,17 @@ chmod 0755 /www/tweet-watcher
 install -d -o tweet-watcher -g tweet-watcher -m 0700 /www/tweet-watcher/data
 chown -R tweet-watcher:tweet-watcher /www/tweet-watcher/data
 find /www/tweet-watcher/data -type f -exec chmod 0600 {} +
+```
+
+再生成一份只允许 root 读取的反代共享令牌；Nginx 用它认证转发头，Node 服务通过 systemd 环境文件读取同一个值：
+
+```bash
+install -d -o root -g root -m 0700 /etc/tweet-watcher
+PROXY_TOKEN="$(openssl rand -hex 32)"
+printf 'TRUST_PROXY_TOKEN=%s\n' "$PROXY_TOKEN" > /etc/tweet-watcher/proxy-token.env
+printf 'proxy_set_header X-Tweet-Watcher-Proxy-Token "%s";\n' "$PROXY_TOKEN" > /etc/tweet-watcher/proxy-token-nginx.conf
+chmod 0600 /etc/tweet-watcher/proxy-token.env /etc/tweet-watcher/proxy-token-nginx.conf
+unset PROXY_TOKEN
 ```
 
 代码保持 `root:root` 只读，只有 `data/`（包括升级时已有的配置文件）归服务用户所有并允许写入。然后新建 `/etc/systemd/system/tweet-watcher.service`：
@@ -168,6 +179,7 @@ WorkingDirectory=/www/tweet-watcher
 ExecStart=/usr/bin/node server.js
 Environment=HOST=127.0.0.1
 Environment=PORT=8787
+EnvironmentFile=/etc/tweet-watcher/proxy-token.env
 UMask=0077
 Restart=on-failure
 RestartSec=3
@@ -212,11 +224,11 @@ server {
         proxy_pass http://127.0.0.1:8787;
         proxy_set_header Host $host;
 
-        # 必须：登录限流按 req.ip 分桶，而 Express 的 trust proxy 只读 X-Forwarded-For。
-        # $proxy_add_x_forwarded_for 会把真实连接 IP 追加到客户端自带的 XFF 之后，
-        # 服务端取最右侧非可信地址，因此客户端无法伪造。
+        # $proxy_add_x_forwarded_for 把 Nginx 看到的真实连接 IP 追加为最右项；
+        # 服务端只在下面的私密令牌验证成功后使用该项。
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        include /etc/tweet-watcher/proxy-token-nginx.conf;
 
         # SSE 实时日志：关闭缓冲，保持长连接
         proxy_buffering off;
@@ -225,7 +237,7 @@ server {
 }
 ```
 
-> ⚠️ **不要漏掉 `X-Forwarded-For`。** 服务端只信任回环代理（`trust proxy = loopback`）且只读 `X-Forwarded-For`；若 Nginx 没有注入它（例如只设了 `X-Real-IP`），所有客户端的 `req.ip` 都会塌缩成 `127.0.0.1`，登录限流退化为**全局单桶** —— 任何人连错 5 次密码就会把所有人一起锁在门外。
+> ⚠️ **令牌文件、`X-Forwarded-For` 和 `X-Forwarded-Proto` 缺一不可。** 未经私密令牌认证的转发头会被忽略，防止同机进程直连 `8787` 后轮换伪造 IP 绕过登录限流。直接访问 Node、不使用反代时可以不设置 `TRUST_PROXY_TOKEN`，此时只采用真实 socket 地址且不会信任任何转发头。
 >
 > ⚠️ 面板端口只监听回环，请务必只从本机 Nginx 反代，不要直接对公网开放。
 
@@ -233,7 +245,7 @@ server {
 
 ## ⚙️ 配置说明
 
-所有配置**均通过 Web 页面统一管理，无需手动编辑文件、也没有 `.env`**。数据持久化到 `data/` 目录下的几个 JSON 文件：
+Twitter、Telegram 与监控配置均通过 Web 页面管理。生产反代另有一份只含 `TRUST_PROXY_TOKEN` 的 root-only systemd 环境文件；业务数据持久化到 `data/` 目录下的几个 JSON 文件：
 
 | 文件 | 内容 |
 |------|------|
@@ -292,9 +304,9 @@ server {
 ## 🔒 安全特性
 
 - 首次访问 Web 页面时需设置密码（至少 8 位）
-- 密码以 **bcrypt**（cost 12）哈希存储在 `data/password.json`；兼容旧 `$2y$` 前缀（自动改写为 `$2b$`）。新密码要求至少 8 个字符且不超过 72 个 UTF-8 字节（bcrypt 的有效输入上限）；旧版生成的未标记哈希保持登录兼容，并在安全边界内自动升级元数据
+- 密码以 **bcrypt**（cost 12）哈希存储在 `data/password.json`；兼容旧 `$2y$` 前缀（自动改写为 `$2b$`）。新密码要求至少 8 个字符且不超过 72 个 UTF-8 字节（bcrypt 的有效输入上限）；旧版生成的未标记哈希保持登录兼容，并在安全边界内自动升级元数据。结构非法或工作因子异常高的持久哈希会快速 fail-closed，避免登录请求陷入指数级 CPU 消耗
 - 密码使用**异步 bcrypt**（不阻塞事件循环），错误时固定延迟 1 秒响应（防暴力破解）
-- **登录限流**（按 `req.ip`，即 `trust proxy=loopback` 下 Nginx 经 `X-Forwarded-For` 传入的真实客户端 IP，客户端无法伪造）：累计失败 5 次锁 5 分钟、10 次锁 30 分钟、20 次锁 60 分钟。锁定期满只放行下一次尝试而**不清零计数**，因此升级档位真正可达；计数在**登录成功**或**1 小时无新失败**时清除。限流表有界（惰性回收 + 硬上限，防内存耗尽）
+- **登录限流**（按经过私密代理令牌认证的 `X-Forwarded-For` 末项分桶；未经认证的转发头一律忽略）：累计失败 5 次锁 5 分钟、10 次锁 30 分钟、20 次锁 60 分钟。锁定期满只放行下一次尝试而**不清零计数**，因此升级档位真正可达；计数在**登录成功**或**1 小时无新失败**时清除。限流表有界（惰性回收 + 硬上限，防内存耗尽）
 - **首次设置令牌**：无密码时服务端启动会先吊销全部旧会话，再在日志打印一次性 `setup_token`；`/api/setup` 必须携带它才能设密，杜绝公网面板的无认证首次抢注（TOFU）。若 `password.json` 损坏（包括合法 JSON 但结构非法），`hasPassword` 判定为 fail-closed（视为已设置），不会重开无认证设置
 - **会话**：HMAC-SHA256 签名的无状态 Cookie（有效期 7 天），内含 epoch —— 登出或改密会 `bump` epoch，使所有已签发会话**立即失效**；签发时间会严格校验并只容忍 5 分钟时钟偏差，畸形 Cookie/会话一律返回 401（不再有 500 堆栈泄露）
 - **CSRF 双提交令牌**：所有改动型接口校验，`timingSafeEqual` 常量时间比较；`/api/logout` 仅在持有效会话+CSRF 时才全局吊销，未认证请求无法借此制造登出 DoS
@@ -304,9 +316,7 @@ server {
 - 文件写入使用原子替换（临时文件 + `fsync` + `rename` + 目录 `fsync`），防止崩溃/断电导致半写损坏；读取时区分「文件不存在」与「存在但损坏」，损坏不静默当作「未设置」
 - 损坏或结构非法的 `config.json` / `secrets.json` 会 fail-closed；已有敏感配置、或当前 worker 已加载过有效配置时，意外缺失的 `config.json` 也不会被当成首次空配置（包括运行中 `data/` 挂载消失）。单独迁移 `sent_ids.json` 仍受支持，配置落盘前 worker 会保留其中的去重记录。系统不会覆盖损坏文件，worker 会停止并报为不健康，Web 进程保持在线。请从 journald 查看错误并从备份恢复，不要直接删除敏感配置后带空值继续运行
 - `bird_path` 只接受绝对路径、限定字符集、无 `..`、且文件名必须为 `bird`——防止已认证用户将其改指向 `/bin/sh` 等宿主二进制。注意该校验拦不住一个**名为 `bird` 的符号链接**指向别处（利用它需要已认证 + 对宿主有写权限）
-- 子进程调用 bird 带 30 秒超时保护，防止挂起
-
-> ⚠️ **已知残留风险：Twitter 凭据经命令行参数传给 bird。** bird 0.8.0 只接受 `--auth-token` / `--ct0` 参数或从浏览器提取 cookie，不支持环境变量、stdin 或凭据文件，因此本项目无法规避。在 Linux 上，`/proc/<pid>/cmdline` 默认对同机其它用户可读，这意味着**同一台机器上的其他用户可以读到你的 X 会话 Cookie**。缓解：以独占用户运行本服务；在多租户主机上以 `hidepid=2` 挂载 `/proc`（`mount -o remount,hidepid=2 /proc`）。
+- 子进程调用 bird 带 30 秒超时保护，防止挂起；Twitter Cookie 通过 bird 0.8.0 支持的 `AUTH_TOKEN` / `CT0` 环境变量传递，不进入可被其他本机用户读取的进程命令行，并且子进程只继承运行所需的最小环境变量集合
 - 忘记密码时，需**停服 → 删除 `password.json` → 重启**，重启后从服务端日志读取新的一次性 `setup_token` 再走首次设置：
 
 ```bash
@@ -347,7 +357,7 @@ X链接：https://x.com/elonmusk/status/1234567890
 | 策略 | 说明 |
 |------|------|
 | ID 集合 | 每个账号维护已推送的推文 ID 列表，持久化到 `sent_ids.json` |
-| 首次静默 | 账号首次运行只记录当前推文 ID，不推送旧推文 |
+| 首次静默 | 账号首次运行只记录当前推文 ID，不推送旧推文；若首次时间线为空，则持久化当前 Twitter Snowflake 时间水位，确保之后发布的第一条推文不会再次被当成基线漏掉 |
 | 集合上限 | 每个账号最多保留 200 条 ID |
 | 置顶推保护 | 淘汰时优先保留"仍出现在本次拉取窗口内"的 ID —— 否则长期置顶的推文会被挤出去重表并每满 200 条重推一次 |
 | 历史推文保护 | 未知但小于或等于已知最高雪花 ID 的条目视为置顶/扩窗带回的旧推文，不补发；真正的新推文按 ID 从旧到新发送 |
@@ -388,7 +398,7 @@ journalctl -u tweet-watcher -f
 迁移到新服务器：
 
 1. 拷贝整个项目目录（含 `server.js`、`lib/`、`public/`、`package.json`）
-2. 新服务器安装 Node.js ≥ 20 与已验证的 bird CLI：`npm install -g @steipete/bird@0.8.0`
+2. 新服务器安装 Node.js ≥ 22 与已验证的 bird CLI：`npm install -g @steipete/bird@0.8.0`
 3. `npm ci --omit=dev` 按锁文件安装运行依赖
 4. （可选）拷贝 `data/` 目录以保留配置、凭据、密码与去重记录；若只想保留去重记录，单独拷贝 `data/sent_ids.json`
 5. 配好 systemd / Nginx 后启动服务，访问面板确认状态
@@ -403,7 +413,7 @@ journalctl -u tweet-watcher -f
 2. 检查面板「监控状态」是否为运行中、是否被「暂停监控」
 3. 检查 Twitter Cookie 是否过期：
    ```bash
-   bird user-tweets elonmusk --json -n 1 --auth-token YOUR_TOKEN --ct0 YOUR_CT0 --no-color
+   AUTH_TOKEN=YOUR_TOKEN CT0=YOUR_CT0 bird user-tweets elonmusk --json -n 1 --no-color
    ```
 4. 重新获取 Cookie，在 Web 页面更新即可（下一轮 tick 自动生效）
 
@@ -423,7 +433,7 @@ bird --version
 which bird
 
 # 手动测试拉取（与服务端调用一致）
-bird user-tweets elonmusk --json -n 1 --auth-token YOUR_TOKEN --ct0 YOUR_CT0 --no-color
+AUTH_TOKEN=YOUR_TOKEN CT0=YOUR_CT0 bird user-tweets elonmusk --json -n 1 --no-color
 ```
 
 > ⚠️ `bird_path` 会经过格式校验：必须是绝对路径、限定字符集、不含 `..`，且**文件名必须为 `bird`**（防止改指向其它宿主二进制）。请填写 bird 可执行文件的真实绝对路径，如 `which bird` 的输出。

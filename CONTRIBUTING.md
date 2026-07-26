@@ -2,7 +2,7 @@
 
 感谢你关注 [`Tweet-Watcher`](README.md)。本项目当前规模不大，但欢迎通过 Issue、Pull Request、文档修正与部署经验分享来帮助完善它。
 
-本项目是单进程 `server.js` 同时承担网页面板与后台 worker 的 Node.js 工具（`package.json` version 3.4.1），请在贡献时以现有 Node 实现为准。
+本项目是单进程 `server.js` 同时承担网页面板与后台 worker 的 Node.js 工具（`package.json` version 3.4.2），请在贡献时以现有 Node 实现为准。
 
 ## 贡献方式
 
@@ -22,7 +22,7 @@
 2. 确认 bird CLI（`@steipete/bird`）能单独运行，例如手动执行一次拉取
 3. 查看面板中的实时日志（SSE 推送的内存日志），或用 `journalctl -u tweet-watcher -f` 查看 stdout 日志
 4. 确认 Twitter Cookie（`auth_token` / `ct0`）、Telegram Bot Token、Chat ID 配置是否正确
-5. 确认 Node.js 版本满足要求（>= 20），以及 bird CLI 路径是否正确（默认 `/www/server/nodejs/v24.18.0/bin/bird`）
+5. 确认 Node.js 版本满足要求（>= 22），以及 bird CLI 路径是否正确（默认 `/www/server/nodejs/v24.18.0/bin/bird`）
 
 ## Pull Request 指南
 

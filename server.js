@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const net = require('net');
 const express = require('express');
 const cfgmod = require('./lib/config');
 const store = require('./lib/store');
@@ -16,8 +17,51 @@ const HOST = process.env.HOST || '127.0.0.1';
 
 const app = express();
 app.disable('x-powered-by');
-// 只信任本机 nginx（回环），避免客户端伪造 X-Forwarded-For 冒充 req.ip 绕过登录限流
-app.set('trust proxy', 'loopback');
+// Express 的 loopback trust proxy 仍允许同机任意进程直连端口并伪造 XFF。只有同时来自
+// 回环地址且携带 Nginx 注入的私密令牌时，才采信转发 IP/协议。
+app.set('trust proxy', false);
+const TRUST_PROXY_TOKEN = typeof process.env.TRUST_PROXY_TOKEN === 'string'
+  ? process.env.TRUST_PROXY_TOKEN : '';
+if (TRUST_PROXY_TOKEN && (Buffer.byteLength(TRUST_PROXY_TOKEN, 'utf8') < 32
+  || Buffer.byteLength(TRUST_PROXY_TOKEN, 'utf8') > 256 || TRUST_PROXY_TOKEN.includes('\0'))) {
+  throw new Error('TRUST_PROXY_TOKEN 必须为 32-256 字节且不能包含 NUL');
+}
+function normalizeIp(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (raw.startsWith('::ffff:') && net.isIP(raw.slice(7)) === 4) return raw.slice(7);
+  return raw;
+}
+function loopbackIp(value) {
+  const ip = normalizeIp(value);
+  return ip === '::1' || (net.isIP(ip) === 4 && ip.startsWith('127.'));
+}
+function tokenMatches(actual, expected) {
+  if (!expected || typeof actual !== 'string') return false;
+  const a = Buffer.from(actual), b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+function requestOrigin(req, expectedToken = TRUST_PROXY_TOKEN) {
+  const remoteIp = normalizeIp(req && req.socket && req.socket.remoteAddress) || 'unknown';
+  const headers = req && req.headers ? req.headers : {};
+  const trustedProxy = loopbackIp(remoteIp)
+    && tokenMatches(headers['x-tweet-watcher-proxy-token'], expectedToken);
+  let clientIp = remoteIp;
+  let secure = !!(req && req.socket && req.socket.encrypted);
+  if (trustedProxy) {
+    const xff = typeof headers['x-forwarded-for'] === 'string' ? headers['x-forwarded-for'] : '';
+    const forwardedIp = normalizeIp(xff.split(',').pop());
+    if (net.isIP(forwardedIp)) clientIp = forwardedIp;
+    secure = typeof headers['x-forwarded-proto'] === 'string'
+      && headers['x-forwarded-proto'].trim().toLowerCase() === 'https';
+  }
+  return { clientIp, secure, trustedProxy };
+}
+app.use((req, res, next) => {
+  const origin = requestOrigin(req);
+  req.twClientIp = origin.clientIp;
+  req.twSecure = origin.secure;
+  next();
+});
 
 // —— 统一安全响应头 ——
 app.use((req, res, next) => {
@@ -56,9 +100,8 @@ app.use('/api', (req, res, next) => { res.setHeader('Cache-Control', 'no-store')
 // async 路由包装：把 rejected promise 交给统一错误中间件，避免 Express4 下请求永久挂起
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-// 只认 req.secure：它已由 trust proxy 依据可信代理的 X-Forwarded-Proto 推导。
-// 直接读原始头会绕过该信任判定，让任意客户端强制 secure Cookie。
-function cookieSecure(req) { return req.secure; }
+// 只使用经过代理令牌认证的协议，直接读取 X-Forwarded-Proto 会允许本机伪造。
+function cookieSecure(req) { return !!req.twSecure; }
 function setAuthCookies(req, res) {
   const secure = cookieSecure(req);
   const maxAge = 7 * 24 * 3600 * 1000;
@@ -152,8 +195,7 @@ app.post('/api/setup', wrap(async (req, res) => {
 let loginChecksInFlight = 0;
 const LOGIN_MAX_IN_FLIGHT = 4;
 app.post('/api/login', wrap(async (req, res) => {
-  // trust proxy=loopback 已保证 req.ip 为 nginx 传入的真实客户端 IP，外部无法伪造；不再读业务层 x-real-ip
-  const ip = req.ip || 'unknown';
+  const ip = req.twClientIp || 'unknown';
   const blk = loginBlockedMinutes(ip);
   if (blk) return res.status(429).json({ ok: false, error: `尝试过多，请 ${blk} 分钟后再试` });
   if (loginChecksInFlight >= LOGIN_MAX_IN_FLIGHT) {
@@ -209,9 +251,15 @@ app.post('/api/password', requireAuth, requireCsrf, wrap(async (req, res) => {
     const nextPassword = typeof new_password === 'string' ? new_password : '';
     const invalid = auth.passwordError(nextPassword);
     if (invalid) return res.status(400).json({ ok: false, error: `新${invalid}` });
-    // 先吊销旧会话再落新密码：若第二次写盘失败，旧密码仍可重新登录，但被盗旧会话不会继续有效。
+    // 哈希期间旧会话仍保持可验证，使另一标签页的全局登出能够推进 epoch；哈希完成后
+    // 再核对一次，随后同步执行 bump + 写盘，中间没有 await，其他请求无法穿插。
+    const nextHash = await auth.hashPassword(nextPassword);
+    if (auth.sessionEpoch() !== passwordEpoch) {
+      return res.status(409).json({ ok: false, error: '认证状态已变化，请重新登录' });
+    }
+    // 若写盘失败，旧密码仍可重新登录，但 bump 已确保持有旧 Cookie 的会话不会复活。
     auth.bumpEpoch();
-    await auth.setPassword(nextPassword);
+    auth.savePasswordHash(nextHash);
     setAuthCookies(req, res);  // 给当前用户换发新会话，避免被自己登出
     res.json({ ok: true });
   } finally { passwordChangeInFlight = false; }
@@ -295,7 +343,12 @@ app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
   } catch (e) {
     // secrets 的原子写失败时旧文件仍在；把先写入的普通配置回滚，避免一次请求只提交一半。
     let rollbackError = null;
-    try { cfgmod.saveConfig(cur); } catch (re) { rollbackError = re; }
+    try {
+      // 首次保存前 config.json 不存在。此时写回默认对象会把“未配置”错误地变成
+      // “已持久化的空配置”，并令 worker 清掉受支持的 sent_ids-only 迁移数据。
+      if (cur.persisted === false) store.removeJSON('config.json');
+      else cfgmod.saveConfig(cur);
+    } catch (re) { rollbackError = re; }
     let effectiveRevision = currentRevision;
     if (rollbackError) {
       effectiveRevision = nextRevision;
@@ -320,7 +373,8 @@ app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
 app.get('/api/status', requireAuth, (req, res) => {
   const cfg = cfgmod.getConfig();
   const st = state.getStatus();
-  const healthy = st.running && st.lastTickAt != null && (Date.now() - st.lastTickAt) < 60000;
+  const heartbeatAge = st.lastTickAt == null ? NaN : Date.now() - st.lastTickAt;
+  const healthy = st.running && Number.isFinite(heartbeatAge) && heartbeatAge >= 0 && heartbeatAge < 60000;
   res.json({ status: st, paused: cfg.paused, accounts: cfg.accounts, healthy });
 });
 app.get('/api/logs', requireAuth, (req, res) => { res.json({ logs: state.getLogs(200) }); });
@@ -475,4 +529,4 @@ if (require.main === module) {
   startServer();
 }
 
-module.exports = { app, startServer };
+module.exports = { app, startServer, requestOrigin };

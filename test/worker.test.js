@@ -31,9 +31,13 @@ function loadWorker({ config, bird, telegram, state = makeState(), storedSent = 
     telegram: require.resolve('../lib/telegram'),
     state: require.resolve('../lib/state'),
   };
+  const writes = [];
   const saved = new Map(Object.values(paths).map((p) => [p, require.cache[p]]));
   const put = (p, exports) => { require.cache[p] = { id: p, filename: p, loaded: true, exports }; };
-  put(paths.store, { readJSON: (name) => name === 'sent_ids.json' ? storedSent : {}, writeJSON: () => {} });
+  put(paths.store, {
+    readJSON: (name) => name === 'sent_ids.json' ? storedSent : {},
+    writeJSON: (name, value) => writes.push({ name, value: JSON.parse(JSON.stringify(value)) }),
+  });
   put(paths.config, {
     LIMITS: { MAX_SENT: 200 },
     validRevision: (value) => Number.isSafeInteger(value) && value >= 0,
@@ -53,6 +57,7 @@ function loadWorker({ config, bird, telegram, state = makeState(), storedSent = 
   return {
     worker,
     state,
+    writes,
     restore() {
       for (const [p, entry] of saved) {
         if (entry) require.cache[p] = entry;
@@ -106,6 +111,93 @@ test('queued accounts skipped by pause remain immediately due after resume', { c
     await harness.worker.tick();
     assert.equal(started.filter((user) => user === 'e').length, 1);
   } finally { harness.restore(); }
+});
+
+test('a wall-clock rollback cannot suspend account checks until the old timestamp catches up', { concurrency: false }, async () => {
+  const originalNow = Date.now;
+  let now = 100000;
+  Date.now = () => now;
+  let fetches = 0;
+  const harness = loadWorker({
+    config: {
+      bird_path: '/usr/bin/bird', tg_chat_id: '1', paused: false,
+      accounts: [account('alice')],
+    },
+    bird: { async fetchTweets() { fetches++; return { ok: true, tweets: [] }; } },
+    telegram: noSendTelegram,
+  });
+  try {
+    await harness.worker.tick();
+    assert.equal(fetches, 1);
+    now = 50000;
+    await harness.worker.tick();
+    assert.equal(fetches, 2);
+  } finally {
+    Date.now = originalNow;
+    harness.restore();
+  }
+});
+
+test('a successful empty first fetch persists a watermark and delivers the first later tweet', { concurrency: false }, async () => {
+  const originalNow = Date.now;
+  const originalSetTimeout = global.setTimeout;
+  const twitterEpoch = 1288834974657;
+  let now = twitterEpoch + 1_000_000;
+  Date.now = () => now;
+  const config = {
+    bird_path: '/usr/bin/bird', tg_chat_id: '1', paused: false,
+    accounts: [account('alice')],
+  };
+  let first;
+  let second;
+  let persisted;
+  try {
+    first = loadWorker({
+      config,
+      bird: {
+        async fetchTweets() {
+          // 模拟慢请求：推文在请求开始后发布，但未进入这次空快照。
+          now += 10_000;
+          return { ok: true, tweets: [] };
+        },
+      },
+      telegram: noSendTelegram,
+    });
+    await first.worker.tick();
+    persisted = first.writes.at(-1).value;
+    assert.match(persisted.alice[0], /^\d+$/);
+    first.restore();
+    first = null;
+
+    // 低 22 位全 0 是同毫秒边界；发布时刻落在首次请求期间。
+    const tweetAt = now - 5_000;
+    const tweetId = (BigInt(tweetAt - twitterEpoch) << 22n).toString();
+    now += 30_001;
+    const sent = [];
+    second = loadWorker({
+      config,
+      storedSent: persisted,
+      bird: { async fetchTweets() { return { ok: true, tweets: [{ id: tweetId }] }; } },
+      telegram: {
+        formatTweet: (tweet) => tweet.id,
+        async sendMessage({ text }) { sent.push(text); return { ok: true }; },
+      },
+    });
+    global.setTimeout = (fn, ms) => {
+      if (ms !== 5000) queueMicrotask(fn);
+      return 0;
+    };
+    second.worker.start();
+    for (let i = 0; i < 20 && sent.length === 0; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.deepEqual(sent, [tweetId]);
+  } finally {
+    Date.now = originalNow;
+    global.setTimeout = originalSetTimeout;
+    if (first) first.restore();
+    if (second) second.restore();
+  }
 });
 
 test('worker status uses the persistent config revision across start and changes', { concurrency: false }, async () => {
@@ -485,6 +577,34 @@ test('the Telegram test endpoint shares the worker bot backoff', { concurrency: 
     await harness.worker.tick();
     now += 30001;
     await harness.worker.tick();
+    assert.equal(sendCalls, 1);
+  } finally {
+    Date.now = originalNow;
+    harness.restore();
+  }
+});
+
+test('a wall-clock rollback preserves Telegram backoff duration instead of extending it', { concurrency: false }, async () => {
+  const originalNow = Date.now;
+  let now = 100000;
+  Date.now = () => now;
+  let sendCalls = 0;
+  const harness = loadWorker({
+    config: { bird_path: '/usr/bin/bird', tg_chat_id: '1', paused: false, accounts: [] },
+    bird: { async fetchTweets() { return { ok: true, tweets: [] }; } },
+    telegram: {
+      formatTweet: (tweet) => tweet.id,
+      async sendMessage() {
+        sendCalls++;
+        return { ok: false, rateLimited: true, retryAfter: 60, description: 'too many requests' };
+      },
+    },
+  });
+  try {
+    assert.equal((await harness.worker.testTelegram()).ok, false);
+    now = 50000;
+    const repeated = await harness.worker.testTelegram();
+    assert.match(repeated.message, /60 秒后/);
     assert.equal(sendCalls, 1);
   } finally {
     Date.now = originalNow;

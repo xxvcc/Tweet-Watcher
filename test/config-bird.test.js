@@ -261,6 +261,43 @@ test('bird fetch timeout uses an unignorable kill signal', { concurrency: false 
   }
 });
 
+test('bird credentials are passed through a minimal environment and never argv', { concurrency: false }, async () => {
+  const childProcess = require('child_process');
+  const modulePath = require.resolve('../lib/bird');
+  const cached = require.cache[modulePath];
+  const originalExecFile = childProcess.execFile;
+  const originalProxyToken = process.env.TRUST_PROXY_TOKEN;
+  let invocation;
+  try {
+    process.env.TRUST_PROXY_TOKEN = 'proxy-secret-that-must-not-reach-bird';
+    childProcess.execFile = (file, args, opts, callback) => {
+      invocation = { file, args, opts };
+      queueMicrotask(() => callback(null, '[]', ''));
+      return {};
+    };
+    delete require.cache[modulePath];
+    const isolatedBird = require('../lib/bird');
+    const result = await isolatedBird.fetchTweets({
+      birdPath: '/tmp/bird', username: 'alice', count: 1,
+      authToken: 'auth-secret', ct0: 'ct0-secret',
+    });
+    assert.equal(result.ok, true);
+    assert.equal(invocation.args.includes('auth-secret'), false);
+    assert.equal(invocation.args.includes('ct0-secret'), false);
+    assert.equal(invocation.args.includes('--auth-token'), false);
+    assert.equal(invocation.args.includes('--ct0'), false);
+    assert.equal(invocation.opts.env.AUTH_TOKEN, 'auth-secret');
+    assert.equal(invocation.opts.env.CT0, 'ct0-secret');
+    assert.equal(invocation.opts.env.TRUST_PROXY_TOKEN, undefined);
+  } finally {
+    childProcess.execFile = originalExecFile;
+    if (originalProxyToken === undefined) delete process.env.TRUST_PROXY_TOKEN;
+    else process.env.TRUST_PROXY_TOKEN = originalProxyToken;
+    if (cached) require.cache[modulePath] = cached;
+    else delete require.cache[modulePath];
+  }
+});
+
 test('bird rejects invalid executable and argv values without spawning', async () => {
   const base = { username: 'alice', count: 1, authToken: 'auth', ct0: 'ct0' };
   const badPath = await bird.fetchTweets({ ...base, birdPath: '/bin/sh' });

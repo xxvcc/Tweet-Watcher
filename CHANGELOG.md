@@ -6,6 +6,28 @@ The format is inspired by Keep a Changelog.
 
 ## [Unreleased]
 
+## [3.4.2] - 2026-07-26
+
+### Security
+- Persisted bcrypt hashes are structurally validated and capped at a conservative accepted work factor before comparison, preventing a tampered cost 15-31 record from turning each login into an extreme CPU task.
+- Twitter `auth_token` and `ct0` are passed to bird 0.8.0 through a minimal child environment instead of argv, removing their exposure through cross-UID `/proc/<pid>/cmdline` reads.
+- Forwarded client IP and HTTPS headers now require a constant-time-checked proxy token in addition to loopback transport, so another local process cannot rotate forged `X-Forwarded-For` values to bypass login throttling.
+- Password changes finish the new bcrypt hash and recheck the session epoch before synchronously revoking sessions and committing it; a logout during either bcrypt phase now cancels the change.
+
+### Fixed
+- Account scheduling detects wall-clock rollback and immediately rebuilds its per-account anchor instead of silently waiting for the old timestamp to catch up; future-dated worker heartbeats no longer report healthy.
+- Telegram backoff anchors shift with wall-clock rollback, preserving the intended remaining delay instead of extending a 60-second flood wait by the size of the clock correction.
+- A successful first fetch with an empty timeline persists a Twitter Snowflake time watermark, so the account's first later tweet is delivered rather than silently becoming a second baseline.
+- A failed first secrets write now restores the original absence of `config.json`, preserving supported `sent_ids.json`-only migrations instead of committing an empty config that clears them.
+- A configuration conflict that arrives after the settings drawer was closed now reloads the remote version instead of leaving the hidden editor and dashboard stale.
+- Static CSS and JavaScript URLs carry the release version so reverse-proxy/CDN asset caching cannot pair a new HTML entrypoint with an older panel script.
+
+### Tests
+- Added eleven regression tests for credential transport, both password-change logout windows, proxy authentication, expensive bcrypt metadata, scheduler/Telegram clock rollback, empty timeline watermarks, first-save rollback, late hidden-drawer conflicts, and rollback deletion boundaries (87 total).
+
+### Changed
+- The minimum supported Node.js version is now 22, matching the pinned bird 0.8.0 runtime requirement.
+
 ## [3.4.1] - 2026-07-26
 
 ### Fixed

@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { app } = require('../server');
+const { app, requestOrigin } = require('../server');
 
 let server;
 let base;
@@ -26,15 +26,40 @@ test.after(async () => {
   if (server && server.listening) await new Promise((resolve) => server.close(resolve));
 });
 
+test('forwarded client identity requires both loopback transport and the private proxy token', () => {
+  const token = 'p'.repeat(32);
+  const request = {
+    socket: { remoteAddress: '127.0.0.1', encrypted: false },
+    headers: {
+      'x-tweet-watcher-proxy-token': 'wrong-token',
+      'x-forwarded-for': '198.51.100.7, 203.0.113.9',
+      'x-forwarded-proto': 'https',
+    },
+  };
+  assert.deepEqual(requestOrigin(request, token), {
+    clientIp: '127.0.0.1', secure: false, trustedProxy: false,
+  });
+
+  request.headers['x-tweet-watcher-proxy-token'] = token;
+  assert.deepEqual(requestOrigin(request, token), {
+    clientIp: '203.0.113.9', secure: true, trustedProxy: true,
+  });
+
+  request.socket.remoteAddress = '203.0.113.20';
+  assert.deepEqual(requestOrigin(request, token), {
+    clientIp: '203.0.113.20', secure: false, trustedProxy: false,
+  });
+});
+
 test('panel entrypoint keeps assets relative for reverse-proxy subpaths', async (t) => {
   if (listenUnavailable) return t.skip('sandbox does not permit local listen sockets');
   const response = await fetch(`${base}/`);
   const html = await response.text();
   assert.equal(response.status, 200);
-  assert.match(html, /href="style\.css"/);
-  assert.match(html, /src="app\.js"/);
+  assert.match(html, /href="style\.css\?v=3\.4\.2"/);
+  assert.match(html, /src="app\.js\?v=3\.4\.2"/);
 
-  const script = await fetch(`${base}/app.js`);
+  const script = await fetch(`${base}/app.js?v=3.4.2`);
   assert.match(script.headers.get('content-type') || '', /javascript/);
 });
 

@@ -61,3 +61,18 @@ test('a zero-byte short write aborts before rename and removes the temp file', (
     assert.equal(calls.unlinked, true);
   });
 });
+
+test('transaction rollback deletion refuses non-file data paths', { concurrency: false }, () => {
+  const originalLstat = fs.lstatSync;
+  const originalUnlink = fs.unlinkSync;
+  let unlinks = 0;
+  try {
+    fs.lstatSync = () => ({ isFile: () => false });
+    fs.unlinkSync = () => { unlinks++; };
+    assert.throws(() => store.removeJSON('config.json'), /非普通数据文件/);
+    assert.equal(unlinks, 0);
+  } finally {
+    fs.lstatSync = originalLstat;
+    fs.unlinkSync = originalUnlink;
+  }
+});

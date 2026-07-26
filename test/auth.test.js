@@ -66,6 +66,24 @@ test('unknown password input policies fail closed', async () => {
   }
 });
 
+test('unreasonably expensive persisted bcrypt hashes fail closed before comparison', async () => {
+  const originalRead = store.readJSON;
+  const originalCompare = bcrypt.compare;
+  let compares = 0;
+  try {
+    store.readJSON = () => ({
+      hash: '$2b$31$' + 'A'.repeat(53),
+      input_policy: 'utf8-72-v1',
+    });
+    bcrypt.compare = async () => { compares++; return true; };
+    assert.equal(await auth.verifyPassword('correct-password'), false);
+    assert.equal(compares, 0);
+  } finally {
+    store.readJSON = originalRead;
+    bcrypt.compare = originalCompare;
+  }
+});
+
 test('epoch overflow rotates the signing key and resets the counter safely', () => {
   const originalReadState = store.readState;
   const originalWriteJSON = store.writeJSON;

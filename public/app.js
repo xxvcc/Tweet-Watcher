@@ -705,7 +705,13 @@
     } finally {
       configSaveInFlight = false;
       setConfigEditorDisabled(false);
-      if (configReloadRequested) reloadConfigFromStream();
+      // 保存等待期间允许关闭抽屉。若 409 冲突在关闭后才返回，closeSettings() 当时还看不到
+      // remoteConfigPending；这里必须主动追赶远端版本，不能让隐藏表单和账号卡片长期停在旧配置。
+      const closedConflict = remoteConfigPending && $('settings').classList.contains('hidden');
+      if (closedConflict) settingsDirty = false;
+      if (configReloadRequested || closedConflict) {
+        reloadConfigFromStream(remoteConfigRevision);
+      }
     }
   }
   async function saveDraftForTest() {

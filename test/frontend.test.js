@@ -285,6 +285,43 @@ test('an SSE revision received during save is reloaded after the save completes'
   assert.equal(app.ids.get('bird_path').value, '/remote/bird');
 });
 
+test('a late save conflict reloads remote config after the settings drawer was closed', async () => {
+  let saveStartedResolve;
+  let getCount = 0;
+  const saveStarted = new Promise((resolve) => { saveStartedResolve = resolve; });
+  let finishSave;
+  const pendingSave = new Promise((resolve) => { finishSave = resolve; });
+  const app = await loadApp(async (url, opts) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config' && (!opts.method || opts.method === 'GET')) {
+      getCount++;
+      return getCount === 1
+        ? response(baseConfig(10))
+        : response(baseConfig(11, { bird_path: '/remote/bird' }));
+    }
+    if (url === 'api/config' && opts.method === 'POST') {
+      saveStartedResolve();
+      return pendingSave;
+    }
+    throw new Error(`unexpected request: ${opts.method || 'GET'} ${url}`);
+  });
+
+  app.ids.get('btn-settings').onclick();
+  app.ids.get('bird_path').value = '/local/bird';
+  for (const listener of app.ids.get('settings').listeners.input || []) {
+    listener({ target: app.ids.get('bird_path') });
+  }
+  const saving = app.ids.get('btn-save').onclick();
+  await saveStarted;
+  app.ids.get('settings-close').onclick();
+  finishSave(response({ ok: false, error: '配置已被其他页面修改' }, 409));
+  await saving;
+  await settle();
+
+  assert.equal(getCount, 2);
+  assert.equal(app.ids.get('bird_path').value, '/remote/bird');
+});
+
 test('a synchronous EventSource construction failure leaves a usable panel and schedules reconnect', async () => {
   class BrokenEventSource {
     static CLOSED = 2;
