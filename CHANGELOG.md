@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 The format is inspired by Keep a Changelog.
 
+## [Unreleased]
+
+## [3.4.0] - 2026-07-26
+
+Fixes from a new three-pass audit, with Node's built-in test runner added for regression coverage.
+
+### Security
+- Password-reset startup now revokes every previously issued session before printing a new setup token; authenticated APIs also require a valid password file, closing an old-session setup-token takeover path.
+- First-time setup and password changes are single-flight. Password changes revoke old sessions before writing the new hash, and login bcrypt checks have a global concurrency cap.
+- Login results are tied to the session epoch captured before bcrypt, so a concurrent logout/password change cannot mint a new valid session from an old hash result.
+- New passwords are limited to bcrypt's effective 72-byte UTF-8 input boundary without locking out legacy long-password hashes; eligible old records migrate to a marked input policy after login. Structurally invalid password metadata fails closed.
+- Bird output now has bounded ID, item-count, text, time, URL, and author fields; logs and restored dedup IDs are bounded as well.
+- Session issue times are type-checked and bounded against future clock skew, so a large system-clock rollback cannot silently extend a signed session beyond its intended lifetime.
+- Updated the locked transitive `body-parser` dependency from 1.20.5 to 1.20.6 for GHSA-v422-hmwv-36x6; the application already supplied a valid fixed body limit, but the vulnerable package is no longer shipped.
+
+### Fixed
+- Accounts waiting for a worker-pool slot are no longer marked as checked before they actually start, so pausing cannot defer an unprocessed account for a full interval.
+- Pause/config changes are rechecked inside Telegram retries. Any 429, including the test endpoint and an in-flight response received during pause, creates per-bot backoff immediately; a failed older tweet blocks newer delivery and leaves the account visibly unhealthy.
+- Queued work now binds its config snapshot and generation atomically; cancelled work remains immediately due, so deleted accounts and old Bot/Chat settings cannot resume from the queue.
+- Empty restored dedup lists rebuild a baseline instead of mass-pushing the first non-empty timeline.
+- Unsafe numeric tweet IDs and completely unrecognized non-empty bird output are rejected instead of being reported as a healthy empty timeline.
+- Unsafe numeric Telegram Chat IDs are rejected before string normalization can hide JSON precision loss.
+- Atomic JSON writes now handle partial `writeSync` results.
+- Frontend API/assets use origin-rooted URLs, panel startup failures are awaited, and permanent SSE failures probe the session and reconnect with backoff instead of blindly reloading.
+- Multi-tab configuration requires revisions and optimistic conflict checks; reloads chase consecutive changes without overwriting an actively edited form or accepting an out-of-order response.
+- Revision events received while a local save is still loading its result are queued and rechecked, so a narrowly timed external save cannot leave the panel on a stale configuration.
+- Configuration revisions are persisted in `config.json`, so a service restart cannot reset the optimistic-lock token and let a stale pre-restart tab overwrite newer settings. Persisted pause values now require a real boolean, and numeric Chat ID `0` round-trips consistently.
+- Corrupt or structurally invalid `config.json` / `secrets.json` files now fail closed and are guarded against later overwrite. Once secrets exist, or the running worker has already observed a persisted config, a missing `config.json` also fails closed; this covers a disappearing `data/` mount. A supported dedup-only migration keeps `sent_ids.json` intact until the first config is saved. The web process stays online and worker health turns false until damaged files are repaired; recovery details remain in journald.
+- SSE initialization registers cleanup resources before replay and preserves `no-store`; log frames now carry standard SSE IDs and resume from `Last-Event-ID`, with the fallback replay window aligned to the 60-row activity feed. Body-parser client errors retain their 4xx status.
+- Asynchronous stdout errors such as `EPIPE` no longer crash the process.
+- Newly pinned or newly visible historical tweets are no longer backfilled, stale worker generations cannot recreate removed account state after a delivery, and mixed bird batches fail closed if any entry is malformed or any supplied tweet ID has lost precision.
+- Retweets from bird 0.8 compact JSON are recognized through Twitter's standard `RT @handle:` text prefix when no explicit retweet field is present.
+- Runtime logs carry an instance-prefixed sequence ID, preventing distinct same-millisecond messages or post-restart sequences from collapsing in a long-lived activity feed.
+- A global logout now invalidates a password change whose bcrypt verification was already in flight, so stale authorization cannot rewrite the password and mint a replacement session after revocation.
+
+### Tests And Documentation
+- Added focused tests for authentication boundaries, malformed config, bird normalization, atomic-write fault injection, Telegram classification, worker concurrency/retry ordering, logging, and HTTP/static routing.
+- Deployment now uses reproducible `npm ci` installs, a dedicated service account, a pre-created `0700` data directory, systemd hardening, bounded restart attempts, and the explicitly verified bird version. Upgrade guidance warns against enabling two service units on the same port.
+- Corrected stale version, proxy-header, security-reporting, and syntax-check instructions.
+
 ## [3.3.0] - 2026-07-10
 
 Fixes from a second full line-by-line audit (all ~1800 lines of `server.js`, `lib/`, and `public/`). No feature changes. Every finding below was reproduced before the fix and verified after it.

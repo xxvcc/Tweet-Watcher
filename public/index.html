@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Tweet Watcher</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%A6%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="/style.css">
 </head>
 <body>
 
@@ -15,17 +15,17 @@
     <div class="lock">🐦</div>
     <h1 id="auth-title">Tweet Watcher</h1>
     <div class="sub" id="auth-sub">请输入密码访问</div>
-    <div id="auth-msg" class="msg err hidden"></div>
+    <div id="auth-msg" class="msg err hidden" role="alert"></div>
     <form id="auth-form">
-      <label id="auth-label">密码</label>
-      <input type="password" id="auth-pw" placeholder="访问密码" autocomplete="current-password" required>
+      <label id="auth-label" for="auth-pw">密码</label>
+      <input type="password" id="auth-pw" placeholder="访问密码" autocomplete="current-password" maxlength="72" required>
       <div id="auth-pw2-wrap" class="hidden">
-        <label>确认密码</label>
-        <input type="password" id="auth-pw2" placeholder="再输一次" autocomplete="new-password">
+        <label for="auth-pw2">确认密码</label>
+        <input type="password" id="auth-pw2" placeholder="再输一次" autocomplete="new-password" maxlength="72">
       </div>
       <div id="auth-token-wrap" class="hidden">
-        <label>首次设置令牌</label>
-        <input type="text" id="auth-setup-token" placeholder="见服务端日志 (journalctl)" autocomplete="off">
+        <label for="auth-setup-token">首次设置令牌</label>
+        <input type="text" id="auth-setup-token" placeholder="见服务端日志 (journalctl)" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="48">
       </div>
       <button type="submit" class="btn-primary btn-full" id="auth-submit">🔓 登录</button>
     </form>
@@ -36,16 +36,16 @@
 <div id="dash" class="wrap hidden">
   <div class="top">
     <div class="brand"><span class="bird">🐦</span> Tweet <em>Watcher</em></div>
-    <span class="livepill" id="livepill"><span class="beat"></span> <span id="live-text">连接中…</span></span>
+    <span class="livepill" id="livepill" role="status" aria-live="polite"><span class="beat"></span> <span id="live-text">连接中…</span></span>
     <span class="grow"></span>
-    <button class="ctrl hidden" id="btn-pause">⏸ 暂停</button>
-    <button class="ctrl hidden" id="btn-resume">▶ 恢复</button>
-    <button class="ctrl amber" id="btn-settings">⚙ 设置</button>
-    <button class="icon-btn" id="theme-toggle" title="切换主题" type="button">🌙</button>
-    <button class="icon-btn" id="logout" title="登出" type="button">🚪</button>
+    <button class="ctrl hidden" id="btn-pause" type="button">⏸ 暂停</button>
+    <button class="ctrl hidden" id="btn-resume" type="button">▶ 恢复</button>
+    <button class="ctrl amber" id="btn-settings" type="button" aria-haspopup="dialog" aria-controls="settings" aria-expanded="false">⚙ 设置</button>
+    <button class="icon-btn" id="theme-toggle" title="切换主题" aria-label="切换主题" type="button">🌙</button>
+    <button class="icon-btn" id="logout" title="登出" aria-label="登出" type="button">🚪</button>
   </div>
 
-  <div id="toast" class="msg hidden"></div>
+  <div id="toast" class="msg hidden" role="status" aria-live="polite"></div>
 
   <div class="stats">
     <div class="stat"><div class="k">监控账号</div><div class="v tnum" id="stat-accounts">—</div></div>
@@ -69,10 +69,10 @@
 
 <!-- 设置抽屉 -->
 <div id="settings" class="drawer-overlay hidden">
-  <div class="drawer">
+  <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <div class="drawer-head">
-      <h2>⚙ 设置</h2>
-      <button class="icon-btn" id="settings-close" title="关闭" type="button">✕</button>
+      <h2 id="settings-title">⚙ 设置</h2>
+      <button class="icon-btn" id="settings-close" title="关闭" aria-label="关闭设置" type="button">✕</button>
     </div>
     <div class="drawer-body">
 
@@ -91,10 +91,10 @@
 
       <div class="section">
         <h3>Twitter 认证</h3>
-        <label>auth_token</label>
-        <input type="text" class="secret" id="auth_token" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="从浏览器 Cookie 获取">
-        <label>ct0</label>
-        <input type="text" class="secret" id="ct0" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="从浏览器 Cookie 获取">
+        <label for="auth_token">auth_token</label>
+        <input type="text" class="secret" id="auth_token" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="4096" placeholder="从浏览器 Cookie 获取">
+        <label for="ct0">ct0</label>
+        <input type="text" class="secret" id="ct0" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="4096" placeholder="从浏览器 Cookie 获取">
         <div class="hint">F12 → Application → Cookies → x.com。已保存的留空即保持不变。</div>
         <button class="btn-ghost btn-sm" id="btn-test-bird" type="button">🧪 测试 Twitter 拉取</button>
       </div>
@@ -103,12 +103,12 @@
         <h3>Telegram 推送</h3>
         <div class="row">
           <div>
-            <label>Bot Token</label>
-            <input type="text" class="secret" id="tg_bot_token" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="从 @BotFather 获取">
+            <label for="tg_bot_token">Bot Token</label>
+            <input type="text" class="secret" id="tg_bot_token" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="4096" placeholder="从 @BotFather 获取">
           </div>
           <div>
-            <label>Chat ID</label>
-            <input type="text" id="tg_chat_id" placeholder="从 @userinfobot 获取">
+            <label for="tg_chat_id">Chat ID</label>
+            <input type="text" id="tg_chat_id" inputmode="text" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="33" placeholder="从 @userinfobot 获取">
           </div>
         </div>
         <button class="btn-ghost btn-sm" id="btn-test-tg" type="button">🧪 测试 Telegram 推送</button>
@@ -116,24 +116,26 @@
 
       <div class="section">
         <h3>其他</h3>
-        <label>bird CLI 路径</label>
-        <input type="text" id="bird_path" placeholder="/www/server/nodejs/vXX/bin/bird">
+        <label for="bird_path">bird CLI 路径</label>
+        <input type="text" id="bird_path" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="4096" placeholder="/www/server/nodejs/vXX/bin/bird">
         <div class="inline-actions">
           <button class="btn-ghost btn-sm" id="btn-detect-bird" type="button">🔍 自动检测</button>
         </div>
-        <div class="hint" id="bird-hint">点「自动检测」自动查找 bird；未安装请执行 <code>npm install -g @steipete/bird</code>。</div>
+        <div class="hint" id="bird-hint">点「自动检测」自动查找 bird；未安装请执行 <code>npm install -g @steipete/bird@0.8.0</code>。</div>
       </div>
 
       <button class="btn-primary btn-full" id="btn-save" type="button">💾 保存配置</button>
 
       <div class="section mt-16">
         <h3>安全</h3>
-        <span class="toggle" id="pw-toggle">🔑 修改访问密码</span>
+        <button class="toggle" id="pw-toggle" type="button" aria-controls="pw-form" aria-expanded="false">🔑 修改访问密码</button>
         <div id="pw-form" class="hidden mt-12">
-          <label>当前密码</label>
-          <input type="password" id="old_pw" autocomplete="current-password">
-          <label>新密码</label>
-          <input type="password" id="new_pw" autocomplete="new-password" placeholder="至少 8 位">
+          <label for="old_pw">当前密码</label>
+          <input type="password" id="old_pw" autocomplete="current-password" maxlength="72">
+          <label for="new_pw">新密码</label>
+          <input type="password" id="new_pw" autocomplete="new-password" maxlength="72" placeholder="至少 8 位">
+          <label for="new_pw2">确认新密码</label>
+          <input type="password" id="new_pw2" autocomplete="new-password" maxlength="72" placeholder="再输一次">
           <button class="btn-ghost btn-sm" id="btn-chpw" type="button">✅ 修改密码</button>
         </div>
       </div>
@@ -142,6 +144,6 @@
   </div>
 </div>
 
-<script src="app.js"></script>
+<script src="/app.js"></script>
 </body>
 </html>

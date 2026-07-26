@@ -2,7 +2,7 @@
 
 极简 Node.js 推特监控 → Telegram 推送工具。基于 [bird](https://github.com/steipete/bird) CLI，纯 Node.js 实现，带 Web 管理面板，网页与后台 worker 同进程运行，开箱即用。核心仅需一个 `server.js` 加 `lib/` 下的几个小模块，使用 JSON 文件管理配置，运行依赖仅 `express` + `bcryptjs`。
 
-> 💡 版本 `3.3.0`：第三轮逐行审计后的修复版 —— 修好了「局部保存配置会清空账号列表」「置顶推文每 200 条被重推一次」「Nginx 只设 `X-Real-IP` 导致登录限流退化为全局单桶」等 20 处问题，详见 [CHANGELOG](CHANGELOG.md)。功能面延续 3.2.0：**监控台式面板**（账号状态卡片 + 顶部指标 + 实时活动流，配置收进设置抽屉）、深浅双主题、bird 路径自动检测；单 Node 进程同时承载面板与后台监控 worker，用 SSE 实时推送状态与日志、用 systemd 常驻，无前端框架、无构建步骤。
+> 💡 版本 `3.4.0`：新一轮三遍审计修复版，重点加固 worker 调度与去重、认证并发、配置持久化、Telegram 退避、bird 输出校验，以及多标签页与 SSE 恢复；新增 75 项自动化回归测试。详见 [CHANGELOG](CHANGELOG.md)。功能面延续 3.2.0：**监控台式面板**（账号状态卡片 + 顶部指标 + 实时活动流，配置收进设置抽屉）、深浅双主题、bird 路径自动检测；单 Node 进程同时承载面板与后台监控 worker，用 SSE 实时推送状态与日志、用 systemd 常驻，无前端框架、无构建步骤。
 >
 > ⚠️ **从 3.2.x 升级请务必同步更新 Nginx 配置**：把 `proxy_set_header X-Real-IP $remote_addr;` 换成 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`，否则登录限流形同虚设（见[生产部署](#6-生产部署systemd--nginx)）。
 
@@ -17,7 +17,7 @@
 - 🔒 密码保护 + 安全加固（bcrypt、无状态签名会话、CSRF、登录限流、防敏感字段回显、data 目录隔离）
 - 🧠 智能去重（ID 集合，首次运行不推送旧推文）
 - ♻️ 每账号独立设置拉取条数和检查频率，保存后下一轮自动热加载，无需重启
-- 🔁 推送失败自动重试（最多 3 次；间隔取 2 秒与 Telegram `retry_after` 的较大值，上限 60 秒，超限转为全局退避）
+- 🔁 瞬时网络失败自动重试（最多 3 次、间隔 2 秒）；Telegram 429 会立即进入全局退避并按 `retry_after` 顺延推送
 - ✂️ 超长推文自动截断（>4000 字符），避免 Telegram API 报错
 - 📋 Web 端实时查看运行日志（SSE 推送，内存环形缓冲 500 条，同时打到 journald）
 - 🚀 纯 Node，无前端框架、无构建步骤
@@ -50,9 +50,11 @@
 │   ├── index.html          # 面板页面
 │   ├── app.js              # 前端逻辑
 │   └── style.css           # 样式
+├── test/                   # Node 内置测试运行器的回归测试
+├── SECURITY.md             # 私密漏洞报告说明
 ├── README.md               # 项目说明
 ├── LICENSE                 # 开源许可证
-└── data/                   # 运行时数据（自动创建，位于站点根之外，永不经 Web 暴露）
+└── data/                   # 运行时数据（自动创建，位于静态 Web 根 public/ 之外）
     ├── config.json         # 普通配置（账号、tg_chat_id、bird_path、paused）
     ├── secrets.json        # 敏感凭据（auth_token / ct0 / tg_bot_token，明文）
     ├── password.json       # 访问密码（bcrypt 哈希）
@@ -65,8 +67,8 @@
 | 依赖 | 说明 |
 |------|------|
 | Node.js ≥ 20 | 运行环境（实测 v24.18.0）；使用内置 `fetch`、`execFile` 等，无需额外扩展 |
-| npm 依赖 | 仅 `express` + `bcryptjs`，`npm install` 自动安装 |
-| bird CLI | `npm install -g @steipete/bird`，用于拉取推文 |
+| npm 依赖 | 仅 `express` + `bcryptjs`，建议用 `npm ci` 按锁文件安装 |
+| bird CLI | `npm install -g @steipete/bird@0.8.0`，用于拉取推文（当前已验证版本） |
 | Telegram Bot | Bot Token + Chat ID |
 | Twitter Cookie | `auth_token` + `ct0` |
 
@@ -79,7 +81,7 @@
 ### 1. 安装 bird CLI
 
 ```bash
-npm install -g @steipete/bird
+npm install -g @steipete/bird@0.8.0
 ```
 
 验证安装：
@@ -98,7 +100,7 @@ which bird
 ```bash
 git clone https://github.com/xxvcc/Tweet-Watcher.git
 cd Tweet-Watcher
-npm install
+npm ci
 ```
 
 ### 3. 启动服务
@@ -119,7 +121,7 @@ HOST=0.0.0.0 PORT=9000 node server.js
 
 ### 4. 首次设置密码
 
-浏览器访问面板地址（本机为 `http://127.0.0.1:8787`），首次访问会提示设置访问密码（至少 8 位）。
+先从启动终端日志取得一次性 `setup_token`；systemd 部署可执行 `journalctl -u tweet-watcher -n 20` 查看。浏览器访问面板地址（本机为 `http://127.0.0.1:8787`），输入该令牌并设置访问密码（至少 8 个字符、最多 72 个 UTF-8 字节）。
 
 ### 5. Web 页面配置
 
@@ -138,22 +140,49 @@ HOST=0.0.0.0 PORT=9000 node server.js
 
 ### 6. 生产部署（systemd + Nginx）
 
-**systemd 常驻** —— 新建 `/etc/systemd/system/tweet-watcher.service`：
+**systemd 常驻** —— 先创建独立、不可登录的服务用户和数据目录。不要复用 Nginx/PHP 的 `www` 用户；bird 当前必须把 Twitter Cookie 放入进程参数，共享 UID 会让同机其他 Web 应用直接读取这些凭据。
+
+```bash
+useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin tweet-watcher
+chown -R root:root /www/tweet-watcher
+chmod 0755 /www/tweet-watcher
+install -d -o tweet-watcher -g tweet-watcher -m 0700 /www/tweet-watcher/data
+chown -R tweet-watcher:tweet-watcher /www/tweet-watcher/data
+find /www/tweet-watcher/data -type f -exec chmod 0600 {} +
+```
+
+代码保持 `root:root` 只读，只有 `data/`（包括升级时已有的配置文件）归服务用户所有并允许写入。然后新建 `/etc/systemd/system/tweet-watcher.service`：
 
 ```ini
 [Unit]
 Description=Tweet Watcher
 After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=simple
-User=www
+User=tweet-watcher
+Group=tweet-watcher
 WorkingDirectory=/www/tweet-watcher
 ExecStart=/usr/bin/node server.js
 Environment=HOST=127.0.0.1
 Environment=PORT=8787
-Restart=always
+UMask=0077
+Restart=on-failure
 RestartSec=3
+
+# 基础沙箱：仅 data/ 可写；网络仍保留给 Twitter 与 Telegram
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/www/tweet-watcher/data
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target
@@ -166,6 +195,8 @@ systemctl daemon-reload
 systemctl enable --now tweet-watcher
 journalctl -u tweet-watcher -f
 ```
+
+升级旧部署时先用 `systemctl list-unit-files | grep tweet-watcher` 核对只启用了一个服务单元；两个单元同时启动同一目录会争用 `8787` 端口并触发 `EADDRINUSE`。上面的启动频率限制会在持续失败时停止重试，修复原因后执行 `systemctl reset-failed tweet-watcher` 再启动。
 
 **Nginx 反代 + HTTPS** —— 面板只监听回环，由 Nginx 对外提供 HTTPS：
 
@@ -198,7 +229,7 @@ server {
 >
 > ⚠️ 面板端口只监听回环，请务必只从本机 Nginx 反代，不要直接对公网开放。
 
-> 💡 无需 `.htaccess`、也无需把 `data/` 放到 Web 根下再做防护：Node 只静态伺服 `public/` 目录，`data/` 本就在站点根之外，永不经 Web 暴露。
+> 💡 无需 `.htaccess`：仓库内的 `data/` 与 `public/` 并列，Node 只静态伺服 `public/`，因此运行时数据不经 Web 暴露。
 
 ## ⚙️ 配置说明
 
@@ -206,7 +237,7 @@ server {
 
 | 文件 | 内容 |
 |------|------|
-| `config.json` | 账号列表、`tg_chat_id`、`bird_path`、`paused`（暂停开关） |
+| `config.json` | 账号列表、`tg_chat_id`、`bird_path`、`paused`（暂停开关）及内部配置版本 |
 | `secrets.json` | `auth_token`、`ct0`、`tg_bot_token`（明文存储，目录权限保护） |
 | `password.json` | 访问密码的 bcrypt 哈希 |
 | `session_secret.json` | 会话 HMAC 密钥与 epoch |
@@ -261,16 +292,17 @@ server {
 ## 🔒 安全特性
 
 - 首次访问 Web 页面时需设置密码（至少 8 位）
-- 密码以 **bcrypt**（cost 12）哈希存储在 `data/password.json`；兼容旧 `$2y$` 前缀（自动改写为 `$2b$`）
+- 密码以 **bcrypt**（cost 12）哈希存储在 `data/password.json`；兼容旧 `$2y$` 前缀（自动改写为 `$2b$`）。新密码要求至少 8 个字符且不超过 72 个 UTF-8 字节（bcrypt 的有效输入上限）；旧版生成的未标记哈希保持登录兼容，并在安全边界内自动升级元数据
 - 密码使用**异步 bcrypt**（不阻塞事件循环），错误时固定延迟 1 秒响应（防暴力破解）
 - **登录限流**（按 `req.ip`，即 `trust proxy=loopback` 下 Nginx 经 `X-Forwarded-For` 传入的真实客户端 IP，客户端无法伪造）：累计失败 5 次锁 5 分钟、10 次锁 30 分钟、20 次锁 60 分钟。锁定期满只放行下一次尝试而**不清零计数**，因此升级档位真正可达；计数在**登录成功**或**1 小时无新失败**时清除。限流表有界（惰性回收 + 硬上限，防内存耗尽）
-- **首次设置令牌**：无密码时服务端启动会在日志打印一次性 `setup_token`，`/api/setup` 必须携带它才能设密，杜绝公网面板的无认证首次抢注（TOFU）。若 `password.json` 损坏，`hasPassword` 判定为 fail-closed（视为已设置），不会重开无认证设置
-- **会话**：HMAC-SHA256 签名的无状态 Cookie（有效期 7 天），内含 epoch —— 登出或改密会 `bump` epoch，使所有已签发会话**立即失效**；畸形 Cookie/会话一律返回 401（不再有 500 堆栈泄露）
+- **首次设置令牌**：无密码时服务端启动会先吊销全部旧会话，再在日志打印一次性 `setup_token`；`/api/setup` 必须携带它才能设密，杜绝公网面板的无认证首次抢注（TOFU）。若 `password.json` 损坏（包括合法 JSON 但结构非法），`hasPassword` 判定为 fail-closed（视为已设置），不会重开无认证设置
+- **会话**：HMAC-SHA256 签名的无状态 Cookie（有效期 7 天），内含 epoch —— 登出或改密会 `bump` epoch，使所有已签发会话**立即失效**；签发时间会严格校验并只容忍 5 分钟时钟偏差，畸形 Cookie/会话一律返回 401（不再有 500 堆栈泄露）
 - **CSRF 双提交令牌**：所有改动型接口校验，`timingSafeEqual` 常量时间比较；`/api/logout` 仅在持有效会话+CSRF 时才全局吊销，未认证请求无法借此制造登出 DoS
 - **安全响应头**：CSP（脚本与样式均严格同源，无 `unsafe-inline`；含 `form-action 'none'`）、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy`，并关闭 `X-Powered-By`；所有 `/api/*` 响应带 `Cache-Control: no-store`
 - 凭据（`auth_token` / `ct0` / `tg_bot_token`）在日志输出中自动 redact，替换为 `***`
-- `data/` 目录权限 `0700`、文件写入 `0600`，位于站点根之外且永不被静态伺服（Node 只 `express.static` 伺服 `public/`）
+- `data/` 目录权限 `0700`、文件写入 `0600`，并位于静态 Web 根 `public/` 之外（Node 只对 `public/` 使用 `express.static`）
 - 文件写入使用原子替换（临时文件 + `fsync` + `rename` + 目录 `fsync`），防止崩溃/断电导致半写损坏；读取时区分「文件不存在」与「存在但损坏」，损坏不静默当作「未设置」
+- 损坏或结构非法的 `config.json` / `secrets.json` 会 fail-closed；已有敏感配置、或当前 worker 已加载过有效配置时，意外缺失的 `config.json` 也不会被当成首次空配置（包括运行中 `data/` 挂载消失）。单独迁移 `sent_ids.json` 仍受支持，配置落盘前 worker 会保留其中的去重记录。系统不会覆盖损坏文件，worker 会停止并报为不健康，Web 进程保持在线。请从 journald 查看错误并从备份恢复，不要直接删除敏感配置后带空值继续运行
 - `bird_path` 只接受绝对路径、限定字符集、无 `..`、且文件名必须为 `bird`——防止已认证用户将其改指向 `/bin/sh` 等宿主二进制。注意该校验拦不住一个**名为 `bird` 的符号链接**指向别处（利用它需要已认证 + 对宿主有写权限）
 - 子进程调用 bird 带 30 秒超时保护，防止挂起
 
@@ -318,12 +350,13 @@ X链接：https://x.com/elonmusk/status/1234567890
 | 首次静默 | 账号首次运行只记录当前推文 ID，不推送旧推文 |
 | 集合上限 | 每个账号最多保留 200 条 ID |
 | 置顶推保护 | 淘汰时优先保留"仍出现在本次拉取窗口内"的 ID —— 否则长期置顶的推文会被挤出去重表并每满 200 条重推一次 |
+| 历史推文保护 | 未知但小于或等于已知最高雪花 ID 的条目视为置顶/扩窗带回的旧推文，不补发；真正的新推文按 ID 从旧到新发送 |
 | 孤立清理 | 从配置中删除账号后，worker 自动清理其去重记录、计时与状态 |
-| 转推识别 | 转推标记为 🔁，与原创推文（🐦）区分 |
+| 转推识别 | 兼容显式转推字段，并识别 bird 0.8.0 精简输出中的标准 `RT @账号:` 前缀；转推标记为 🔁，原创推文标记为 🐦 |
 | 按账号落盘 | 每个账号一轮检查推送完毕后统一写盘 `sent_ids.json`（而非每条一次），降低写放大；语义仍是 at-least-once —— 崩溃至多导致"已发未记"，下轮重发 |
 | 损坏即重建 | `sent_ids.json` 整体损坏或某账号的值不是数组时，按"首次运行"处理（重建基线、不推送），而不是把整条时间线当新推文全量推出 |
 
-推送失败时最多重试 3 次，间隔取 `2 秒` 与 Telegram `retry_after` 的较大值。若 `retry_after` 超过 60 秒（洪泛限制），worker **不会在 tick 内长睡**（那会拖停整个调度），而是设置一个全局退避窗口，把推文顺延到退避结束后再发。全部失败则记录日志、保留该 ID 未推状态，下轮仍可再试。
+瞬时网络失败最多重试 3 次，重试间隔为 2 秒。任何 Telegram 429 都会立即建立 bot 级全局退避窗口（最长 1 小时），本轮不再占用 worker 槽位等待，并按 `retry_after` 把当前及后续推文顺延。永久性 4xx 不重试；全部失败时记录日志、保留该 ID 未推状态，下轮仍可再试。旧推文失败时不会越过它发送更新推文。
 
 ## 📋 日志查看
 
@@ -355,8 +388,8 @@ journalctl -u tweet-watcher -f
 迁移到新服务器：
 
 1. 拷贝整个项目目录（含 `server.js`、`lib/`、`public/`、`package.json`）
-2. 新服务器安装 Node.js ≥ 20 与 bird CLI：`npm install -g @steipete/bird`
-3. `npm install` 安装运行依赖
+2. 新服务器安装 Node.js ≥ 20 与已验证的 bird CLI：`npm install -g @steipete/bird@0.8.0`
+3. `npm ci --omit=dev` 按锁文件安装运行依赖
 4. （可选）拷贝 `data/` 目录以保留配置、凭据、密码与去重记录；若只想保留去重记录，单独拷贝 `data/sent_ids.json`
 5. 配好 systemd / Nginx 后启动服务，访问面板确认状态
 

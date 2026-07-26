@@ -2,7 +2,7 @@
 
 感谢你关注 [`Tweet-Watcher`](README.md)。本项目当前规模不大，但欢迎通过 Issue、Pull Request、文档修正与部署经验分享来帮助完善它。
 
-本项目是单进程 `server.js` 同时承担网页面板与后台 worker 的 Node.js 工具（`package.json` version 3.0.0），请在贡献时以现有 Node 实现为准。
+本项目是单进程 `server.js` 同时承担网页面板与后台 worker 的 Node.js 工具（`package.json` version 3.4.0），请在贡献时以现有 Node 实现为准。
 
 ## 贡献方式
 
@@ -41,6 +41,7 @@
 ```bash
 node --check server.js
 for f in lib/*.js; do node --check "$f"; done
+npm test
 ```
 
 ## 代码风格建议
@@ -58,7 +59,7 @@ for f in lib/*.js; do node --check "$f"; done
 
 ## 安全问题反馈
 
-如果你发现的是安全漏洞，而不是普通 Bug，建议不要直接公开敏感利用细节。你可以先通过仓库 Issue 提交一个最小化描述，标记为安全相关，后续再决定是否公开完整细节。
+如果你发现的是安全漏洞，而不是普通 Bug，请不要创建公开 Issue 或披露利用细节。请按 [`SECURITY.md`](SECURITY.md) 使用 GitHub 的私密漏洞报告渠道。
 
 ## 提交信息建议
 
@@ -73,7 +74,7 @@ for f in lib/*.js; do node --check "$f"; done
 
 文档改进同样非常重要，尤其欢迎以下内容：
 
-- 不同 Linux / systemd / Nginx 环境的部署说明（含 SSE 反代与 `X-Real-IP` 注入）
+- 不同 Linux / systemd / Nginx 环境的部署说明（含 SSE 反代与 `X-Forwarded-For` 注入）
 - bird 返回结构变化下的兼容说明
 - 常见错误信息与排查步骤
 - 适合中文用户的使用示例与故障处理经验

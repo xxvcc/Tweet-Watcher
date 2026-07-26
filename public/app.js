@@ -3,7 +3,8 @@
   const $ = (id) => document.getElementById(id);
   const getCookie = (n) => {
     const m = document.cookie.match(new RegExp('(?:^|; )' + n + '=([^;]*)'));
-    return m ? decodeURIComponent(m[1]) : '';
+    if (!m) return '';
+    try { return decodeURIComponent(m[1]); } catch (_) { return m[1]; }
   };
 
   // ---------- 主题：深色 / 浅色 / 跟随系统 ----------
@@ -11,7 +12,11 @@
   const THEME_ORDER = ['system', 'light', 'dark'];
   const THEME_ICON = { system: '🌗', light: '☀️', dark: '🌙' };
   const THEME_NAME = { system: '跟随系统', light: '浅色', dark: '深色' };
-  const curTheme = () => { const t = localStorage.getItem(THEME_KEY); return THEME_ORDER.indexOf(t) > -1 ? t : 'system'; };
+  const curTheme = () => {
+    let t = null;
+    try { t = localStorage.getItem(THEME_KEY); } catch (_) {}
+    return THEME_ORDER.indexOf(t) > -1 ? t : 'system';
+  };
   function applyTheme(t) {
     if (t === 'system') document.documentElement.removeAttribute('data-theme');
     else document.documentElement.setAttribute('data-theme', t);
@@ -21,11 +26,12 @@
   applyTheme(curTheme());
   if ($('theme-toggle')) $('theme-toggle').onclick = () => {
     const next = THEME_ORDER[(THEME_ORDER.indexOf(curTheme()) + 1) % THEME_ORDER.length];
-    localStorage.setItem(THEME_KEY, next); applyTheme(next);
+    try { localStorage.setItem(THEME_KEY, next); } catch (_) {}
+    applyTheme(next);
   };
 
   // 这几个接口的 401 是业务语义（密码错误 / 未登录探测），不应触发跳转
-  const KEEP_ON_401 = new Set(['api/session', 'api/login', 'api/setup']);
+  const KEEP_ON_401 = new Set(['/api/session', '/api/login', '/api/setup']);
 
   async function api(method, path, body) {
     const opts = { method, credentials: 'same-origin', headers: {} };
@@ -37,7 +43,11 @@
       location.reload(); // 会话已失效：回登录页，而不是让面板停在过期数据上
       throw new Error('会话已失效，请重新登录');
     }
-    if (!res.ok) throw new Error((data && data.error) || ('HTTP ' + res.status));
+    if (!res.ok) {
+      const err = new Error((data && data.error) || ('HTTP ' + res.status));
+      err.status = res.status;
+      throw err;
+    }
     return data || {};
   }
 
@@ -62,12 +72,19 @@
     const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
     return m + ':' + String(s).padStart(2, '0');
   }
-  function fmtUptime(ms) {
-    if (!ms) return '—';
+  function renderUptime(ms) {
+    const box = $('stat-uptime');
+    box.textContent = '';
+    if (!ms) { box.textContent = '—'; return; }
     const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
-    if (h >= 24) { const d = Math.floor(h / 24); return `${d}<small>天</small> ${h % 24}<small>h</small>`; }
-    if (h > 0) return `${h}<small>h</small> ${m}<small>m</small>`;
-    return `${m}<small>m</small>`;
+    const part = (value, unit, spaced) => {
+      if (spaced) box.appendChild(document.createTextNode(' '));
+      box.appendChild(document.createTextNode(String(value)));
+      box.appendChild(el('small', null, unit));
+    };
+    if (h >= 24) { part(Math.floor(h / 24), '天'); part(h % 24, 'h', true); }
+    else if (h > 0) { part(h, 'h'); part(m, 'm', true); }
+    else part(m, 'm');
   }
 
   // ---------- 认证 ----------
@@ -75,11 +92,15 @@
   function showAuth(needSetup) {
     mode = needSetup ? 'setup' : 'login';
     $('dash').classList.add('hidden'); $('settings').classList.add('hidden');
+    $('btn-settings').setAttribute('aria-expanded', 'false');
+    document.body.classList.remove('drawer-open');
+    clearPasswordForm();
     $('auth').classList.remove('hidden');
     $('auth-title').textContent = needSetup ? '设置访问密码' : 'Tweet Watcher';
     $('auth-sub').textContent = needSetup ? '首次使用，请设置一个密码' : '请输入密码访问';
     $('auth-label').textContent = needSetup ? '设置密码' : '密码';
     $('auth-pw').placeholder = needSetup ? '至少 8 位' : '访问密码';
+    $('auth-pw').setAttribute('autocomplete', needSetup ? 'new-password' : 'current-password');
     $('auth-pw2-wrap').classList.toggle('hidden', !needSetup);
     $('auth-token-wrap').classList.toggle('hidden', !needSetup);
     $('auth-submit').textContent = needSetup ? '🔐 设置并进入' : '🔓 登录';
@@ -87,74 +108,207 @@
   }
   $('auth-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const pw = $('auth-pw').value, m = $('auth-msg');
+    const pw = $('auth-pw').value, m = $('auth-msg'), submit = $('auth-submit');
+    const wasSetup = mode === 'setup';
     m.classList.add('hidden');
+    submit.disabled = true;
     try {
-      if (mode === 'setup') {
-        if (pw.length < 8) throw new Error('密码至少 8 位');
+      if (wasSetup) {
+        if ([...pw].length < 8) throw new Error('密码至少 8 位');
         if (pw !== $('auth-pw2').value) throw new Error('两次密码不一致');
         const token = $('auth-setup-token').value.trim();
         if (!token) throw new Error('请输入首次设置令牌（见服务端日志）');
-        await api('POST', 'api/setup', { password: pw, setup_token: token });
+        await api('POST', '/api/setup', { password: pw, setup_token: token });
       } else {
-        await api('POST', 'api/login', { password: pw });
+        await api('POST', '/api/login', { password: pw });
       }
-      startPanel();
+      $('auth-pw').value = ''; $('auth-pw2').value = ''; $('auth-setup-token').value = '';
+      // setup 已经成功后，即使随后加载面板失败，也不能把用户留在一个永远只会返回
+      // “已设置过密码”的 setup 表单里。退回登录模式后可直接重试或刷新恢复已签发会话。
+      if (wasSetup) showAuth(false);
+      await startPanel();
     } catch (err) { m.textContent = err.message; m.classList.remove('hidden'); }
+    finally { submit.disabled = false; }
   });
 
   // ---------- 数据 ----------
   let es = null;
   let statusData = { accounts: {}, running: false };
   let accountsCfg = [];
+  let configRevision = null;
+  let configReloadInFlight = false;
+  let configReloadRequested = false;
+  let configLoadSequence = 0;
+  let configAppliedSequence = 0;
+  let configSaveInFlight = false;
+  let settingsDirty = false;
+  let remoteConfigPending = false;
+  let remoteConfigRevision = null;
+  let loadedConfigSignature = null;
   const feedBuf = [];
   const feedSeen = new Set(); // 活动流去重键（防 SSE 重连回放重复）
 
   async function startPanel() {
+    // 配置加载成功后再切换视图；失败时登录区仍可显示错误，不会留下空白面板和未处理拒绝。
+    await loadConfig();
     $('auth').classList.add('hidden');
     $('dash').classList.remove('hidden');
-    await loadConfig();
-    connectStream();
     renderAll();
+    try { connectStream(); }
+    catch (e) {
+      $('livepill').className = 'livepill off';
+      $('live-text').textContent = '实时连接不可用';
+      toast('实时状态连接失败：' + e.message, 'err');
+    }
   }
 
   // ---------- bird 路径提示 / 自动检测 ----------
   let birdOk = true;
+  let birdDetectInFlight = false;
+  let settingsViewGeneration = 0;
   function birdHintColor(h, kind) { h.style.color = kind === 'warn' ? 'var(--bad)' : kind === 'ok' ? 'var(--good)' : ''; }
   function setBirdHint(kind, text) { const h = $('bird-hint'); if (!h) return; h.textContent = text; birdHintColor(h, kind); }     // 动态值走 textContent（防注入）
-  function setBirdHintHTML(kind, html) { const h = $('bird-hint'); if (!h) return; h.innerHTML = html; birdHintColor(h, kind); }  // 仅用于固定文案（含 <code>）
+  function setBirdInstallHint(kind, before, after) {
+    const h = $('bird-hint'); if (!h) return;
+    h.textContent = before;
+    h.appendChild(el('code', null, 'npm install -g @steipete/bird@0.8.0'));
+    h.appendChild(document.createTextNode(after));
+    birdHintColor(h, kind);
+  }
   async function detectBird(auto) {
     const btn = $('btn-detect-bird');
+    if (birdDetectInFlight) {
+      if (!auto) toast('bird 自动检测正在进行，请稍候', 'err');
+      return;
+    }
+    const startingPath = $('bird_path').value;
+    const startingViewGeneration = settingsViewGeneration;
     let old;
-    if (btn && !auto) { btn.disabled = true; old = btn.textContent; btn.textContent = '检测中…'; }
+    birdDetectInFlight = true;
+    if (btn) btn.disabled = true;
+    if (btn && !auto) { old = btn.textContent; btn.textContent = '检测中…'; }
     try {
-      const r = await api('POST', 'api/detect-bird', {});
+      const r = await api('POST', '/api/detect-bird', {});
+      // 检测可能持续数十秒。期间的手工输入、保存回载或关闭抽屉都代表原上下文已失效，
+      // 旧响应不得再覆盖当前路径或更新与当前配置不符的提示。
+      const stale = configSaveInFlight
+        || $('settings').classList.contains('hidden')
+        || settingsViewGeneration !== startingViewGeneration
+        || $('bird_path').value !== startingPath;
+      if (stale) {
+        if (!auto) toast('检测已完成，但表单状态已变化，未覆盖当前 bird 路径', 'err');
+        return;
+      }
       if (r.found) {
         $('bird_path').value = r.path;
+        settingsDirty = true;
         setBirdHint('ok', '✅ 已检测到：' + r.path + (r.version ? '（' + r.version + '）' : '') + '，记得点保存。');
         if (!auto) toast('✅ 已检测到 bird：' + r.path, 'ok');
       } else {
-        setBirdHintHTML('warn', '⚠ 未检测到 bird。请安装 <code>npm install -g @steipete/bird</code>，或手动填写路径。');
+        setBirdInstallHint('warn', '⚠ 未检测到 bird。请安装 ', '，或手动填写路径。');
         if (!auto) toast('未检测到 bird，请先安装或手动填写路径', 'err');
       }
     } catch (e) { if (!auto) toast(e.message, 'err'); }
-    finally { if (btn && !auto) { btn.disabled = false; btn.textContent = old; } }
+    finally {
+      birdDetectInFlight = false;
+      if (btn) btn.disabled = configSaveInFlight;
+      if (btn && !auto) btn.textContent = old;
+    }
   }
 
-  async function loadConfig() {
-    const c = await api('GET', 'api/config');
+  function configSignature(c) {
+    const secrets = c && c.secrets && typeof c.secrets === 'object' ? c.secrets : {};
+    return JSON.stringify({
+      bird_path: (c && c.bird_path) || '',
+      tg_chat_id: (c && c.tg_chat_id) || '',
+      accounts: Array.isArray(c && c.accounts) ? c.accounts : [],
+      secrets: {
+        hasAuthToken: !!secrets.hasAuthToken,
+        hasCt0: !!secrets.hasCt0,
+        hasTgBotToken: !!secrets.hasTgBotToken,
+      },
+    });
+  }
+  function hasSecretDraft() {
+    return ['auth_token', 'ct0', 'tg_bot_token'].some((id) => !!$(id).value);
+  }
+  function noteRemoteConfigConflict(revision) {
+    if (!remoteConfigPending) toast('其他标签页已更新配置；当前未保存内容已保留，关闭设置后将载入新版本', 'err');
+    remoteConfigPending = true;
+    remoteConfigRevision = Number.isSafeInteger(revision) ? revision : null;
+  }
+
+  async function loadConfig(fromStream) {
+    const sequence = ++configLoadSequence;
+    const c = await api('GET', '/api/config');
+    const loadedRevision = Number.isSafeInteger(c.configRevision) ? c.configRevision : null;
+    const signature = configSignature(c);
+    // GET 发出后用户仍可能开始编辑或保存；流同步不能在响应回来时覆盖这些新输入。
+    if (fromStream && configSaveInFlight) return false;
+    // 并行 GET 可能乱序完成；旧响应不得覆盖较新的表单。请求序列负责页面内的响应顺序，
+    // 持久化 revision 负责标识服务端配置版本。
+    if (sequence < configAppliedSequence) return false;
+    configAppliedSequence = sequence;
+
+    if (fromStream && settingsDirty) {
+      // 另一个标签页即使保存了完全相同的普通配置，服务端 revision 也会递增。
+      // 内容快照相同且本页没有待写密钥时，可以只推进基准 revision，保留本地草稿；
+      // 密钥只返回“是否存在”，有密钥草稿时无法证明远端值未变，必须保守判冲突。
+      if (signature === loadedConfigSignature && !hasSecretDraft()) {
+        configRevision = loadedRevision;
+        remoteConfigPending = false;
+        remoteConfigRevision = null;
+        return false;
+      }
+      noteRemoteConfigConflict(loadedRevision);
+      return false;
+    }
+
+    configRevision = loadedRevision;
+    loadedConfigSignature = signature;
     accountsCfg = c.accounts || [];
     birdOk = c.birdOk !== false;
     $('bird_path').value = c.bird_path || '';
     $('tg_chat_id').value = c.tg_chat_id || '';
+    // 远端刷新意味着本地未保存密钥已被明确放弃；不能只更新 placeholder 后把旧 value 留着，
+    // 否则下一次保存会用旧密钥覆盖刚同步的新版本。
+    $('auth_token').value = ''; $('ct0').value = ''; $('tg_bot_token').value = '';
     const DOTS = '••••••••••••';
     $('auth_token').placeholder = c.secrets.hasAuthToken ? DOTS : '';
     $('ct0').placeholder = c.secrets.hasCt0 ? DOTS : '';
     $('tg_bot_token').placeholder = c.secrets.hasTgBotToken ? DOTS : '';
     renderAcctRows(accountsCfg);
     ['auth_token', 'ct0', 'tg_bot_token'].forEach(refreshReveal);
-    if (!birdOk) setBirdHintHTML('warn', '⚠ 当前 bird 路径不存在。点「🔍 自动检测」或手动填写；未安装请 <code>npm install -g @steipete/bird</code>。');
-    else setBirdHintHTML('', '当前路径可用。未安装可 <code>npm install -g @steipete/bird</code> 后点自动检测。');
+    if (!birdOk) setBirdInstallHint('warn', '⚠ 当前 bird 路径不存在。点「🔍 自动检测」或手动填写；未安装请 ', '。');
+    else setBirdInstallHint('', '当前路径可用。未安装可 ', ' 后点自动检测。');
+    settingsDirty = false;
+    remoteConfigPending = false;
+    remoteConfigRevision = null;
+    return true;
+  }
+
+  async function reloadConfigFromStream(expectedRevision) {
+    // 保存期间收到的外部 revision 不能丢弃。本地保存后的 GET 可能已经拿到旧响应；
+    // 把事件排队，并在保存 finally 中再核对一次服务端最终版本。
+    if (configSaveInFlight) { configReloadRequested = true; return; }
+    if (Number.isSafeInteger(expectedRevision) && remoteConfigPending && remoteConfigRevision === expectedRevision) return;
+    configReloadRequested = true;
+    if (configReloadInFlight) return;
+    configReloadInFlight = true;
+    try {
+      do {
+        configReloadRequested = false;
+        try {
+          const applied = await loadConfig(true);
+          if (applied) renderAll();
+          // 响应等待期间可能又收到更高 revision；即使本次因草稿保护未应用，
+          // 也要再核对一次已排队的更新，不能把最后一个状态帧静默丢掉。
+          if (!applied && !configReloadRequested) return;
+        }
+        catch (e) { toast('配置刷新失败：' + e.message, 'err'); return; }
+      } while (configReloadRequested);
+    }
+    finally { configReloadInFlight = false; }
   }
 
   // ---------- 顶栏 / 指标 ----------
@@ -177,7 +331,7 @@
   function renderStats() {
     $('stat-accounts').textContent = accountsCfg.length;
     $('stat-pushes').textContent = statusData.pushesToday || 0;
-    $('stat-uptime').innerHTML = statusData.startedAt ? fmtUptime(Date.now() - statusData.startedAt) : '—';
+    renderUptime(statusData.startedAt ? Date.now() - statusData.startedAt : 0);
     let next = Infinity;
     if (!statusData.paused && statusData.running) {
       accountsCfg.forEach((a) => { const n = nextCheckSec(a); if (n != null && n < next) next = n; });
@@ -329,11 +483,15 @@
     return ev;
   }
   function pushFeed(l) {
-    const key = l.t + '|' + l.msg;
+    const logKey = (line) => {
+      const id = line && line.id;
+      return (typeof id === 'string' || Number.isSafeInteger(id)) ? 'id:' + id : line.t + '|' + line.msg;
+    };
+    const key = logKey(l);
     if (feedSeen.has(key)) return; // 去重：SSE 重连回放的历史行不再重复插入
     feedSeen.add(key);
     feedBuf.push(l);
-    while (feedBuf.length > 120) { const old = feedBuf.shift(); feedSeen.delete(old.t + '|' + old.msg); }
+    while (feedBuf.length > 120) { const old = feedBuf.shift(); feedSeen.delete(logKey(old)); }
     const box = $('feed');
     box.insertBefore(feedLine(l), box.firstChild);
     while (box.children.length > 60) box.removeChild(box.lastChild);
@@ -342,45 +500,116 @@
   function renderAll() { renderTop(); renderStats(); renderCards(); }
 
   // ---------- SSE ----------
+  let streamRetryTimer = null;
+  let streamRetryMs = 1000;
+  let streamProbeInFlight = false;
+  function scheduleStreamReconnect() {
+    if (streamRetryTimer) return;
+    if (es) es.close();
+    streamRetryTimer = setTimeout(() => {
+      streamRetryTimer = null;
+      connectStream();
+    }, streamRetryMs);
+    streamRetryMs = Math.min(30000, streamRetryMs * 2);
+  }
   function connectStream() {
     if (es) es.close();
-    es = new EventSource('api/stream');
-    es.addEventListener('status', (e) => {
-      try { statusData = JSON.parse(e.data); statusData.accounts = statusData.accounts || {}; renderAll(); } catch (_) {}
+    let source;
+    try { source = new EventSource('/api/stream'); }
+    catch (_) {
+      es = null;
+      const pill = $('livepill'), txt = $('live-text');
+      if (pill && txt) { pill.className = 'livepill off'; txt.textContent = '重连中'; }
+      scheduleStreamReconnect();
+      return;
+    }
+    es = source;
+    source.onopen = () => {
+      if (es !== source) return;
+      streamRetryMs = 1000;
+    };
+    source.addEventListener('status', (e) => {
+      if (es !== source) return;
+      try {
+        statusData = JSON.parse(e.data); statusData.accounts = statusData.accounts || {};
+        const nextRevision = Number.isSafeInteger(statusData.configRevision) ? statusData.configRevision : null;
+        if (configRevision != null && nextRevision != null && nextRevision !== configRevision) reloadConfigFromStream(nextRevision);
+        renderAll();
+      } catch (_) {}
     });
-    es.addEventListener('log', (e) => { try { pushFeed(JSON.parse(e.data)); } catch (_) {} });
-    es.onerror = () => {
-      // 只有网络层断开（readyState=CONNECTING）浏览器才会自动重连。
-      // 响应非 200 或 Content-Type 不是 text/event-stream（如会话失效后的 401）会让
-      // EventSource 永久关闭，此时必须刷新回登录页，否则面板静默冻结在旧数据上。
-      if (es.readyState === EventSource.CLOSED) location.reload();
+    source.addEventListener('log', (e) => { if (es === source) { try { pushFeed(JSON.parse(e.data)); } catch (_) {} } });
+    source.onerror = async () => {
+      if (es !== source) return;
+      const pill = $('livepill'), txt = $('live-text');
+      if (pill && txt) { pill.className = 'livepill off'; txt.textContent = '重连中'; }
+      // 网络断开由 EventSource 自行重连；永久关闭还可能是 SSE 满载/反代错误，不能一律刷新页面。
+      if (source.readyState !== EventSource.CLOSED || streamProbeInFlight) return;
+      streamProbeInFlight = true;
+      let authed = null;
+      try { authed = !!(await api('GET', '/api/session')).authed; } catch (_) {}
+      finally { streamProbeInFlight = false; }
+      if (authed === false) location.reload();
+      else scheduleStreamReconnect();
     };
   }
 
   // ---------- 设置抽屉 ----------
   let autoDetectTried = false;
+  let settingsReturnFocus = null;
   function openSettings() {
+    if (!$('settings').classList.contains('hidden')) return;
+    settingsViewGeneration++;
+    settingsReturnFocus = document.activeElement;
     $('settings').classList.remove('hidden');
+    $('btn-settings').setAttribute('aria-expanded', 'true');
+    document.body.classList.add('drawer-open');
+    $('settings-close').focus();
     if (!birdOk && !autoDetectTried) { autoDetectTried = true; detectBird(true); }
   }
-  function closeSettings() { $('settings').classList.add('hidden'); }
+  function closeSettings() {
+    settingsViewGeneration++;
+    $('settings').classList.add('hidden');
+    $('btn-settings').setAttribute('aria-expanded', 'false');
+    document.body.classList.remove('drawer-open');
+    clearPasswordForm();
+    if (remoteConfigPending) {
+      settingsDirty = false;
+      remoteConfigRevision = null;
+      reloadConfigFromStream();
+    }
+    if (settingsReturnFocus && settingsReturnFocus.isConnected && typeof settingsReturnFocus.focus === 'function') settingsReturnFocus.focus();
+    settingsReturnFocus = null;
+  }
   $('btn-detect-bird').onclick = () => detectBird(false);
   $('btn-settings').onclick = openSettings;
   $('settings-close').onclick = closeSettings;
   $('settings').addEventListener('click', (e) => { if (e.target === $('settings')) closeSettings(); });
+  document.addEventListener('keydown', (e) => {
+    if ($('settings').classList.contains('hidden')) return;
+    if (e.key === 'Escape') { closeSettings(); return; }
+    if (e.key !== 'Tab') return;
+    const focusable = [].filter.call($('settings').querySelectorAll('button, input'), (node) => !node.disabled && !node.closest('.hidden'));
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
 
   // 账号编辑行
   function makeAcctRow(a) {
     a = a || { username: '', fetch_count: 10, check_interval: 300 };
     const row = el('div', 'acct-row');
     const name = document.createElement('input');
-    name.type = 'text'; name.className = 'col-name'; name.placeholder = 'elonmusk'; name.value = a.username || ''; name.setAttribute('data-role', 'name');
+    name.type = 'text'; name.className = 'col-name'; name.placeholder = 'elonmusk'; name.value = a.username || ''; name.maxLength = 16;
+    name.autocomplete = 'off'; name.spellcheck = false; name.setAttribute('autocapitalize', 'off'); name.setAttribute('aria-label', '用户名'); name.setAttribute('data-role', 'name');
     const fc = document.createElement('input');
-    fc.type = 'number'; fc.className = 'col-num'; fc.min = 1; fc.max = 50; fc.value = a.fetch_count || 10; fc.setAttribute('data-role', 'fc');
+    fc.type = 'number'; fc.className = 'col-num'; fc.min = 1; fc.max = 50; fc.step = 1; fc.value = a.fetch_count || 10; fc.setAttribute('aria-label', '每次拉取条数'); fc.setAttribute('data-role', 'fc');
     const iv = document.createElement('input');
-    iv.type = 'number'; iv.className = 'col-num'; iv.min = 30; iv.max = 3600; iv.value = a.check_interval || 300; iv.setAttribute('data-role', 'iv');
+    iv.type = 'number'; iv.className = 'col-num'; iv.min = 30; iv.max = 3600; iv.step = 1; iv.value = a.check_interval || 300; iv.setAttribute('aria-label', '检查频率（秒）'); iv.setAttribute('data-role', 'iv');
     const del = document.createElement('button');
-    del.className = 'btn-x col-x'; del.type = 'button'; del.textContent = '✕'; del.onclick = () => row.remove();
+    del.className = 'btn-x col-x'; del.type = 'button'; del.textContent = '✕';
+    del.setAttribute('aria-label', '删除此账号行');
+    del.onclick = () => { row.remove(); settingsDirty = true; };
     row.append(name, fc, iv, del);
     return row;
   }
@@ -401,7 +630,15 @@
     });
     return out;
   }
-  $('btn-add-acct').onclick = () => { const r = makeAcctRow(); $('acct-list').appendChild(r); r.querySelector('input').focus(); };
+  $('btn-add-acct').onclick = () => {
+    const r = makeAcctRow(); $('acct-list').appendChild(r); r.querySelector('input').focus(); settingsDirty = true;
+  };
+  $('settings').addEventListener('input', (e) => {
+    if (!e.target || !e.target.matches('input')) return;
+    if (e.target.closest('#acct-list') || ['bird_path', 'tg_chat_id', 'auth_token', 'ct0', 'tg_bot_token'].includes(e.target.id)) {
+      settingsDirty = true;
+    }
+  });
 
   // 密钥字段显示切换（空字段隐藏眼睛；.secret 字段用 CSS 打码 + readonly 防自动填充）
   function addReveal(id) {
@@ -424,67 +661,146 @@
       if (!masked) { input.classList.remove('secret'); input.type = 'password'; isSecret = false; }
     }
     const showing = () => isSecret ? input.classList.contains('reveal') : input.type === 'text';
-    const setShow = (on) => { if (isSecret) input.classList.toggle('reveal', on); else input.type = on ? 'text' : 'password'; btn.classList.toggle('on', on); };
+    const setShow = (on) => {
+      if (isSecret) input.classList.toggle('reveal', on); else input.type = on ? 'text' : 'password';
+      btn.classList.toggle('on', on);
+      btn.setAttribute('aria-pressed', String(on));
+      btn.setAttribute('aria-label', on ? '隐藏内容' : '显示内容');
+    };
     const sync = () => { const has = !!input.value; btn.style.display = has ? '' : 'none'; if (!has) setShow(false); };
     btn.onclick = () => setShow(!showing());
     input.addEventListener('input', sync);
     input._revealSync = sync; wrap.appendChild(btn); sync();
   }
-  ['auth_token', 'ct0', 'tg_bot_token', 'old_pw', 'new_pw'].forEach(addReveal);
+  ['auth_token', 'ct0', 'tg_bot_token', 'old_pw', 'new_pw', 'new_pw2'].forEach(addReveal);
   function refreshReveal(id) { const e2 = $(id); if (e2 && e2._revealSync) e2._revealSync(); }
 
   function collectPayload() {
     const p = { bird_path: $('bird_path').value.trim(), tg_chat_id: $('tg_chat_id').value.trim(), accounts: collectAccounts() };
+    if (Number.isSafeInteger(configRevision)) p.config_revision = configRevision;
     const at = $('auth_token').value.trim(), ct = $('ct0').value.trim(), bt = $('tg_bot_token').value.trim();
     if (at) p.auth_token = at; if (ct) p.ct0 = ct; if (bt) p.tg_bot_token = bt;
     return p;
   }
+  function setConfigEditorDisabled(disabled) {
+    const selector = '#bird_path, #tg_chat_id, #auth_token, #ct0, #tg_bot_token, #acct-list input, #acct-list button, #btn-add-acct, #btn-detect-bird, #btn-save';
+    $('settings').querySelectorAll(selector).forEach((control) => { control.disabled = disabled; });
+    $('btn-detect-bird').disabled = disabled || birdDetectInFlight;
+  }
   async function saveConfig() {
-    const r = await api('POST', 'api/config', collectPayload());
-    $('auth_token').value = ''; $('ct0').value = ''; $('tg_bot_token').value = '';
-    ['auth_token', 'ct0', 'tg_bot_token'].forEach(refreshReveal);
-    await loadConfig();
-    renderAll();
-    return r;
+    if (configSaveInFlight) throw new Error('配置正在保存，请稍候');
+    if (remoteConfigPending) throw new Error('配置已在其他标签页更新，请先关闭设置载入新版本');
+    configSaveInFlight = true;
+    setConfigEditorDisabled(true);
+    try {
+      const r = await api('POST', '/api/config', collectPayload());
+      $('auth_token').value = ''; $('ct0').value = ''; $('tg_bot_token').value = '';
+      ['auth_token', 'ct0', 'tg_bot_token'].forEach(refreshReveal);
+      await loadConfig();
+      renderAll();
+      return r;
+    } catch (e) {
+      if (e.status === 409) noteRemoteConfigConflict();
+      throw e;
+    } finally {
+      configSaveInFlight = false;
+      setConfigEditorDisabled(false);
+      if (configReloadRequested) reloadConfigFromStream();
+    }
+  }
+  async function saveDraftForTest() {
+    if (remoteConfigPending) throw new Error('配置已在其他标签页更新，请先关闭设置载入新版本');
+    return settingsDirty ? saveConfig() : { warnings: [] };
   }
   $('btn-save').onclick = async () => {
+    if (!settingsDirty) { toast('配置没有变化', 'ok'); return; }
     try { const r = await saveConfig(); toast(r.warnings && r.warnings.length ? '⚠ ' + r.warnings.join('；') : '✅ 配置已保存', r.warnings && r.warnings.length ? 'err' : 'ok'); }
     catch (e) { toast(e.message, 'err'); }
   };
   $('btn-test-bird').onclick = async () => {
     const btn = $('btn-test-bird'); btn.disabled = true; const old = btn.textContent; btn.textContent = '测试中…';
-    try { await saveConfig(); const r = await api('POST', 'api/test/bird', {}); toast((r.ok ? '✅ ' : '❌ ') + r.message, r.ok ? 'ok' : 'err'); }
+    try {
+      // 无改动时不要做一次空保存：空保存也会推进 revision 并取消 worker 在途任务。
+      const saved = await saveDraftForTest();
+      if (saved.warnings && saved.warnings.length) throw new Error('配置未完全保存：' + saved.warnings.join('；'));
+      const r = await api('POST', '/api/test/bird', {}); toast((r.ok ? '✅ ' : '❌ ') + r.message, r.ok ? 'ok' : 'err');
+    }
     catch (e) { toast(e.message, 'err'); } finally { btn.disabled = false; btn.textContent = old; }
   };
   $('btn-test-tg').onclick = async () => {
     const btn = $('btn-test-tg'); btn.disabled = true; const old = btn.textContent; btn.textContent = '测试中…';
-    try { await saveConfig(); const r = await api('POST', 'api/test/telegram', {}); toast((r.ok ? '✅ ' : '❌ ') + r.message, r.ok ? 'ok' : 'err'); }
+    try {
+      const saved = await saveDraftForTest();
+      if (saved.warnings && saved.warnings.length) throw new Error('配置未完全保存：' + saved.warnings.join('；'));
+      const r = await api('POST', '/api/test/telegram', {}); toast((r.ok ? '✅ ' : '❌ ') + r.message, r.ok ? 'ok' : 'err');
+    }
     catch (e) { toast(e.message, 'err'); } finally { btn.disabled = false; btn.textContent = old; }
   };
 
-  $('btn-pause').onclick = async () => { try { await api('POST', 'api/control', { action: 'pause' }); } catch (e) { toast(e.message, 'err'); } };
-  $('btn-resume').onclick = async () => { try { await api('POST', 'api/control', { action: 'resume' }); } catch (e) { toast(e.message, 'err'); } };
-
-  $('pw-toggle').onclick = () => $('pw-form').classList.toggle('hidden');
-  $('btn-chpw').onclick = async () => {
+  let controlInFlight = false;
+  async function setPaused(action) {
+    if (controlInFlight) return;
+    controlInFlight = true;
+    $('btn-pause').disabled = true; $('btn-resume').disabled = true;
     try {
-      await api('POST', 'api/password', { old_password: $('old_pw').value, new_password: $('new_pw').value });
-      $('old_pw').value = ''; $('new_pw').value = ''; ['old_pw', 'new_pw'].forEach(refreshReveal); $('pw-form').classList.add('hidden');
+      const r = await api('POST', '/api/control', { action });
+      statusData.paused = !!r.paused;
+      renderTop();
+    } catch (e) { toast(e.message, 'err'); }
+    finally { controlInFlight = false; $('btn-pause').disabled = false; $('btn-resume').disabled = false; }
+  }
+  $('btn-pause').onclick = () => setPaused('pause');
+  $('btn-resume').onclick = () => setPaused('resume');
+
+  function clearPasswordForm() {
+    ['old_pw', 'new_pw', 'new_pw2'].forEach((id) => { if ($(id)) { $(id).value = ''; refreshReveal(id); } });
+    if ($('pw-form')) $('pw-form').classList.add('hidden');
+    if ($('pw-toggle')) $('pw-toggle').setAttribute('aria-expanded', 'false');
+  }
+  $('pw-toggle').onclick = () => {
+    const closing = !$('pw-form').classList.contains('hidden');
+    if (closing) clearPasswordForm();
+    else { $('pw-form').classList.remove('hidden'); $('pw-toggle').setAttribute('aria-expanded', 'true'); $('old_pw').focus(); }
+  };
+  $('btn-chpw').onclick = async () => {
+    const btn = $('btn-chpw');
+    if (btn.disabled) return;
+    try {
+      const nextPassword = $('new_pw').value;
+      if ([...nextPassword].length < 8) throw new Error('新密码至少 8 位');
+      if (nextPassword !== $('new_pw2').value) throw new Error('两次新密码不一致');
+      btn.disabled = true;
+      await api('POST', '/api/password', { old_password: $('old_pw').value, new_password: $('new_pw').value });
+      clearPasswordForm();
       toast('✅ 密码已修改');
     } catch (e) { toast(e.message, 'err'); }
+    finally { btn.disabled = false; }
   };
 
-  $('logout').onclick = async () => { try { await api('POST', 'api/logout'); } catch (_) {} location.reload(); };
+  $('logout').onclick = async () => {
+    const btn = $('logout');
+    if (btn.disabled) return;
+    btn.disabled = true;
+    try { await api('POST', '/api/logout'); location.reload(); }
+    catch (e) { toast('登出失败：' + e.message, 'err'); btn.disabled = false; }
+  };
+
+  // 从浏览器前进/后退缓存恢复的 DOM 可能仍含登出前的面板数据；恢复时强制重新校验会话。
+  window.addEventListener('pageshow', (e) => { if (e.persisted) location.reload(); });
 
   setInterval(tickTimes, 1000);
 
   // ---------- 启动 ----------
   (async function init() {
     try {
-      const s = await api('GET', 'api/session');
+      const s = await api('GET', '/api/session');
       if (!s.hasPassword) showAuth(true);
       else if (!s.authed) showAuth(false);
-      else startPanel();
-    } catch (e) { showAuth(false); }
+      else await startPanel();
+    } catch (e) {
+      showAuth(false);
+      $('auth-msg').textContent = '面板加载失败：' + e.message;
+      $('auth-msg').classList.remove('hidden');
+    }
   })();
 })();

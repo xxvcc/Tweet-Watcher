@@ -66,7 +66,7 @@ function setAuthCookies(req, res) {
   res.cookie('tw_csrf', auth.makeCsrf(), { httpOnly: false, sameSite: 'lax', secure, path: '/', maxAge });
 }
 function requireAuth(req, res, next) {
-  if (auth.verifySession(req.cookies.tw_sess)) return next();
+  if (auth.hasPassword() && auth.verifySession(req.cookies.tw_sess)) return next();
   res.status(401).json({ ok: false, error: '未登录' });
 }
 function requireCsrf(req, res, next) {
@@ -76,9 +76,13 @@ function requireCsrf(req, res, next) {
 
 // —— 首次设置令牌：无密码时于启动打印，/api/setup 须携带它，杜绝无认证首次抢注(TOFU) ——
 let setupToken = null;
+let setupInFlight = false;
 function refreshSetupToken() {
   if (!auth.hasPassword()) {
     if (!setupToken) {
+      // 密码重置流程会删除 password.json；先持久化吊销旧 Cookie，防旧会话读取日志中的新 setup token。
+      // 写盘失败必须向上抛出并由致命错误处理退出，不能在恢复窗口 fail-open。
+      auth.bumpEpoch();
       setupToken = crypto.randomBytes(24).toString('hex');
       state.log(`⚙ 首次设置令牌（用于 /api/setup，仅本进程有效）：${setupToken}`);
     }
@@ -123,31 +127,61 @@ function recordFail(ip) {
 }
 
 // ===== 认证相关 =====
+let passwordChangeInFlight = false;
 app.get('/api/session', (req, res) => {
-  res.json({ hasPassword: auth.hasPassword(), authed: auth.verifySession(req.cookies.tw_sess) });
+  const hasPassword = auth.hasPassword();
+  res.json({ hasPassword, authed: hasPassword && auth.verifySession(req.cookies.tw_sess) });
 });
 app.post('/api/setup', wrap(async (req, res) => {
   if (auth.hasPassword()) return res.status(400).json({ ok: false, error: '已设置过密码' });
   const token = (req.body && req.body.setup_token) || req.headers['x-setup-token'] || '';
   if (!checkSetupToken(token)) return res.status(403).json({ ok: false, error: '首次设置令牌无效，请查看服务端日志获取' });
-  const pw = String((req.body && req.body.password) || '');
-  if (pw.length < 8) return res.status(400).json({ ok: false, error: '密码至少 8 位' });
-  await auth.setPassword(pw);
-  setupToken = null;
-  setAuthCookies(req, res);
-  res.json({ ok: true });
+  const pw = req.body && typeof req.body.password === 'string' ? req.body.password : '';
+  const invalid = auth.passwordError(pw);
+  if (invalid) return res.status(400).json({ ok: false, error: invalid });
+  // bcrypt 会让出事件循环；必须在 await 前抢占单飞锁，防两个 setup 同时通过检查并互相覆盖密码。
+  if (setupInFlight) return res.status(409).json({ ok: false, error: '首次设置正在进行，请稍候' });
+  setupInFlight = true;
+  try {
+    await auth.setPassword(pw);
+    setupToken = null;
+    setAuthCookies(req, res);
+    res.json({ ok: true });
+  } finally { setupInFlight = false; }
 }));
+let loginChecksInFlight = 0;
+const LOGIN_MAX_IN_FLIGHT = 4;
 app.post('/api/login', wrap(async (req, res) => {
   // trust proxy=loopback 已保证 req.ip 为 nginx 传入的真实客户端 IP，外部无法伪造；不再读业务层 x-real-ip
   const ip = req.ip || 'unknown';
   const blk = loginBlockedMinutes(ip);
   if (blk) return res.status(429).json({ ok: false, error: `尝试过多，请 ${blk} 分钟后再试` });
-  const pw = String((req.body && req.body.password) || '');
+  if (loginChecksInFlight >= LOGIN_MAX_IN_FLIGHT) {
+    res.setHeader('Retry-After', '2');
+    return res.status(503).json({ ok: false, error: '登录服务繁忙，请稍后重试' });
+  }
+  if (passwordChangeInFlight) {
+    res.setHeader('Retry-After', '2');
+    return res.status(503).json({ ok: false, error: '密码正在修改，请稍后重试' });
+  }
+  const pw = req.body && typeof req.body.password === 'string' ? req.body.password : '';
+  const loginEpoch = auth.sessionEpoch();
   // 先同步记账再校验：与闸门判定处于同一同步临界区（其间无 await），杜绝"并发请求在自增前全部放行"的绕过
   recordFail(ip);
-  if (await auth.verifyPassword(pw)) { loginFails.delete(ip); setAuthCookies(req, res); return res.json({ ok: true }); }
-  await new Promise((r) => setTimeout(r, 1000));
-  res.status(401).json({ ok: false, error: '密码错误' });
+  loginChecksInFlight++;
+  try {
+    if (await auth.verifyPassword(pw)) {
+      loginFails.delete(ip);
+      // bcrypt 比较期间可能发生全局登出或改密。不得用新的 epoch 给旧校验结果补签会话。
+      if (passwordChangeInFlight || auth.sessionEpoch() !== loginEpoch) {
+        return res.status(409).json({ ok: false, error: '认证状态已变化，请重试' });
+      }
+      setAuthCookies(req, res);
+      return res.json({ ok: true });
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+    res.status(401).json({ ok: false, error: '密码错误' });
+  } finally { loginChecksInFlight--; }
 }));
 app.post('/api/logout', (req, res) => {
   // 仅在持有有效会话 + CSRF 时才全局吊销(bumpEpoch)，否则任意未认证请求可借此制造全局登出 DoS。
@@ -160,13 +194,27 @@ app.post('/api/logout', (req, res) => {
   res.json({ ok: true });
 });
 app.post('/api/password', requireAuth, requireCsrf, wrap(async (req, res) => {
-  const { old_password, new_password } = req.body || {};
-  if (!(await auth.verifyPassword(String(old_password || '')))) return res.status(400).json({ ok: false, error: '当前密码错误' });
-  if (String(new_password || '').length < 8) return res.status(400).json({ ok: false, error: '新密码至少 8 位' });
-  await auth.setPassword(String(new_password));
-  auth.bumpEpoch();          // 改密后旧会话立即失效
-  setAuthCookies(req, res);  // 给当前用户换发新会话，避免被自己登出
-  res.json({ ok: true });
+  if (passwordChangeInFlight) return res.status(409).json({ ok: false, error: '另一次改密正在进行，请稍候' });
+  passwordChangeInFlight = true;
+  try {
+    const { old_password, new_password } = req.body || {};
+    const oldPassword = typeof old_password === 'string' ? old_password : '';
+    const passwordEpoch = auth.sessionEpoch();
+    if (!(await auth.verifyPassword(oldPassword))) return res.status(400).json({ ok: false, error: '当前密码错误' });
+    // bcrypt 校验期间可能有另一个标签页登出并吊销当前会话。不能让这个旧授权结果
+    // 随后改写密码并取得新会话，否则全局登出的安全边界会被在途请求绕过。
+    if (auth.sessionEpoch() !== passwordEpoch) {
+      return res.status(409).json({ ok: false, error: '认证状态已变化，请重新登录' });
+    }
+    const nextPassword = typeof new_password === 'string' ? new_password : '';
+    const invalid = auth.passwordError(nextPassword);
+    if (invalid) return res.status(400).json({ ok: false, error: `新${invalid}` });
+    // 先吊销旧会话再落新密码：若第二次写盘失败，旧密码仍可重新登录，但被盗旧会话不会继续有效。
+    auth.bumpEpoch();
+    await auth.setPassword(nextPassword);
+    setAuthCookies(req, res);  // 给当前用户换发新会话，避免被自己登出
+    res.json({ ok: true });
+  } finally { passwordChangeInFlight = false; }
 }));
 
 // ===== 配置 =====
@@ -174,15 +222,30 @@ app.get('/api/config', requireAuth, (req, res) => {
   const cfg = cfgmod.getConfig();
   const s = cfgmod.getSecrets();
   let birdOk = false;
-  try { birdOk = fs.existsSync(cfg.bird_path); } catch (_) {}
+  try {
+    birdOk = fs.statSync(cfg.bird_path).isFile();
+    if (birdOk) fs.accessSync(cfg.bird_path, fs.constants.X_OK);
+  } catch (_) { birdOk = false; }
   res.json({
     bird_path: cfg.bird_path, tg_chat_id: cfg.tg_chat_id, accounts: cfg.accounts, birdOk,
+    configRevision: cfg.revision,
     secrets: { hasAuthToken: !!s.auth_token, hasCt0: !!s.ct0, hasTgBotToken: !!s.tg_bot_token },
   });
 });
 app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
   const b = req.body || {};
   const cur = cfgmod.getConfig();
+  const currentRevision = cur.revision;
+  // 必须带上实际编辑的版本；若允许省略，旧标签页/旧 API 客户端仍可绕过乐观锁。
+  if (b.config_revision === undefined) {
+    return res.status(428).json({ ok: false, error: '缺少配置版本，请重新载入后再保存' });
+  }
+  if (!cfgmod.validRevision(b.config_revision)) {
+    return res.status(400).json({ ok: false, error: '配置版本无效' });
+  }
+  if (b.config_revision !== currentRevision) {
+    return res.status(409).json({ ok: false, error: '配置已被其他页面修改，请重新载入后再保存' });
+  }
   const warnings = [];
   // 与 bird_path / tg_chat_id 一致的局部更新语义：字段缺省即保留原值。
   // 否则一个只改 tg_chat_id 的请求会把 accounts 静默清空。
@@ -205,17 +268,50 @@ app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
   }
   let tg_chat_id = cur.tg_chat_id;
   if (b.tg_chat_id !== undefined) {
-    const v = String(b.tg_chat_id).trim();
-    if (cfgmod.validChatId(v)) tg_chat_id = v;
+    const validType = typeof b.tg_chat_id === 'string' || typeof b.tg_chat_id === 'number';
+    const v = validType ? String(b.tg_chat_id).trim() : '';
+    const valueToValidate = typeof b.tg_chat_id === 'string' ? v : b.tg_chat_id;
+    // 数字必须在转为字符串前校验，否则超出安全整数范围的 JSON 数字已发生精度丢失，
+    // String(...) 会把它伪装成一个格式合法但可能错误的 Chat ID。
+    if (validType && cfgmod.validChatId(valueToValidate)) tg_chat_id = v;
     else warnings.push('Telegram Chat ID 非法（须为整数），已保留原值');
   }
-  cfgmod.saveConfig({ bird_path, tg_chat_id, paused: cur.paused, accounts });
   const sec = cfgmod.getSecrets();
   const ns = { ...sec };
-  if (typeof b.auth_token === 'string' && b.auth_token.trim()) ns.auth_token = b.auth_token.trim();
-  if (typeof b.ct0 === 'string' && b.ct0.trim()) ns.ct0 = b.ct0.trim();
-  if (typeof b.tg_bot_token === 'string' && b.tg_bot_token.trim()) ns.tg_bot_token = b.tg_bot_token.trim();
-  cfgmod.saveSecrets(ns);
+  const updateSecret = (key, label) => {
+    if (typeof b[key] !== 'string' || !b[key].trim()) return;
+    const value = b[key].trim();
+    if (Buffer.byteLength(value, 'utf8') > 4096) warnings.push(`${label} 过长，已保留原值`);
+    else ns[key] = value;
+  };
+  updateSecret('auth_token', 'auth_token');
+  updateSecret('ct0', 'ct0');
+  updateSecret('tg_bot_token', 'Telegram Bot Token');
+  const nextRevision = cfgmod.nextRevision(currentRevision);
+  const nextConfig = { bird_path, tg_chat_id, paused: cur.paused, accounts, revision: nextRevision };
+  cfgmod.saveConfig(nextConfig);
+  try {
+    cfgmod.saveSecrets(ns);
+  } catch (e) {
+    // secrets 的原子写失败时旧文件仍在；把先写入的普通配置回滚，避免一次请求只提交一半。
+    let rollbackError = null;
+    try { cfgmod.saveConfig(cur); } catch (re) { rollbackError = re; }
+    let effectiveRevision = currentRevision;
+    if (rollbackError) {
+      effectiveRevision = nextRevision;
+      // 原子写语义下通常仍是前一份有效文件；若连读取也失败，保留已知的新版本并继续回传 partial 警告。
+      try { effectiveRevision = cfgmod.getConfig().revision; } catch (_) {}
+    }
+    worker.configChanged(effectiveRevision);
+    if (rollbackError) {
+      state.log('配置保存失败且回滚失败：普通配置可能已更新，敏感配置保持原值');
+      return res.status(500).json({ ok: false, partial: true, error: '配置仅部分保存，请重新载入核对' });
+    }
+    state.log('敏感配置保存失败，普通配置已回滚');
+    return res.status(500).json({ ok: false, error: '配置保存失败，已回滚' });
+  }
+  // worker 的 generation 负责取消旧任务；对外版本必须使用已落盘值。
+  worker.configChanged(nextRevision);
   // 回传服务端最终采用的值，便于前端核对被静默保留的字段
   res.json({ ok: true, accounts, bird_path, tg_chat_id, warnings });
 });
@@ -255,13 +351,13 @@ app.post('/api/detect-bird', requireAuth, requireCsrf, wrap(async (req, res) => 
 let birdTestInFlight = false;
 let tgTestInFlight = false;
 app.post('/api/test/bird', requireAuth, requireCsrf, wrap(async (req, res) => {
-  if (birdTestInFlight) return res.status(429).json({ ok: false, message: '上一次测试仍在进行，请稍候' });
+  if (birdTestInFlight) return res.status(429).json({ ok: false, error: '上一次测试仍在进行，请稍候' });
   birdTestInFlight = true;
   try { res.json(await worker.testBird((req.body && req.body.username) || '')); }
   finally { birdTestInFlight = false; }
 }));
 app.post('/api/test/telegram', requireAuth, requireCsrf, wrap(async (req, res) => {
-  if (tgTestInFlight) return res.status(429).json({ ok: false, message: '上一次测试仍在进行，请稍候' });
+  if (tgTestInFlight) return res.status(429).json({ ok: false, error: '上一次测试仍在进行，请稍候' });
   tgTestInFlight = true;
   try { res.json(await worker.testTelegram()); }
   finally { tgTestInFlight = false; }
@@ -275,39 +371,62 @@ app.get('/api/stream', requireAuth, (req, res) => {
   if (sseCount >= SSE_MAX) return res.status(503).end(); // 连接数上限，防 fd/内存耗尽
   sseCount++;
   res.writeHead(200, {
-    'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache',
+    'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-store',
     Connection: 'keep-alive', 'X-Accel-Buffering': 'no',
   });
 
-  let closed = false;
+  let closing = false;
+  let released = false;
   let ka = null;
-  const cleanup = () => {
-    if (closed) return;
-    closed = true;
+  const stopProducing = () => {
+    if (closing) return;
+    closing = true;
     if (ka) clearInterval(ka);
     state.bus.off('status', onStatus); state.bus.off('log', onLog);
+  };
+  const cleanup = () => {
+    stopProducing();
+    if (released) return;
+    released = true;
     sseCount--;
   };
-  const send = (event, data) => {
-    if (closed) return;
+  const closeStream = (force) => {
+    stopProducing();
+    // 连接数只在真实 close 事件中释放。慢客户端即使长期排空也始终占用一个配额槽。
+    try {
+      if (force) res.destroy();
+      else res.end();
+    } catch (_) { try { res.destroy(); } catch (_) {} }
+  };
+  const send = (event, data, id) => {
+    if (closing) return;
     // 慢客户端不得让待发数据在进程内无界堆积：超过阈值直接断开，由前端重连
-    if (res.writableLength > SSE_MAX_BUFFER) { cleanup(); try { res.end(); } catch (_) {} return; }
-    try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch (_) { cleanup(); }
+    if (res.writableLength > SSE_MAX_BUFFER) { closeStream(true); return; }
+    const idLine = id == null ? '' : `id: ${id}\n`;
+    try { res.write(`event: ${event}\n${idLine}data: ${JSON.stringify(data)}\n\n`); } catch (_) { closeStream(true); }
   };
   const onStatus = (s) => send('status', s);
-  const onLog = (l) => send('log', l);
+  const onLog = (l) => send('log', l, l.id);
 
-  send('status', state.getStatus());
-  for (const l of state.getLogs(50)) send('log', l);
+  // 先注册完整生命周期，再回放初始帧。若大回放触发慢客户端断开，cleanup 才能清掉全部资源。
+  req.on('close', cleanup);
+  res.on('close', cleanup);
   state.bus.on('status', onStatus);
   state.bus.on('log', onLog);
-
   ka = setInterval(() => {
     // 会话被登出/改密/过期后主动断流，避免向已吊销会话持续推送
-    if (!auth.verifySession(req.cookies.tw_sess)) { cleanup(); try { res.end(); } catch (_) {} return; }
-    try { res.write(': ping\n\n'); } catch (_) { cleanup(); }
+    if (!auth.hasPassword() || !auth.verifySession(req.cookies.tw_sess)) { closeStream(); return; }
+    try { res.write(': ping\n\n'); } catch (_) { closeStream(); }
   }, 25000);
-  req.on('close', cleanup);
+
+  send('status', state.getStatus());
+  // 标准 SSE id 让浏览器自动重连时携带 Last-Event-ID。只补发该 ID 之后的日志；
+  // ID 已淘汰或服务重启时回放最新 60 条，与前端可见窗口一致，不混入断线前的陈旧行。
+  const recentLogs = state.getLogs(60);
+  const lastEventId = typeof req.headers['last-event-id'] === 'string' ? req.headers['last-event-id'] : '';
+  const resumeAt = lastEventId ? recentLogs.findIndex((line) => line.id === lastEventId) : -1;
+  const replayLogs = resumeAt >= 0 ? recentLogs.slice(resumeAt + 1) : recentLogs;
+  for (const l of replayLogs) send('log', l, l.id);
 });
 
 // 未知接口返回 JSON 404，而不是被下面的 SPA 兜底路由回一个 200 的 HTML
@@ -319,12 +438,13 @@ app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.ht
 
 // ===== 统一错误处理：绝不回传堆栈/绝对路径 =====
 app.use((err, req, res, next) => {
-  if (err && (err.status === 400 || err.statusCode === 400 || err.type === 'entity.parse.failed' || err instanceof SyntaxError)) {
-    if (!res.headersSent) return res.status(400).json({ ok: false, error: '请求无效' });
-    return;
+  const clientStatus = Number(err && (err.status || err.statusCode));
+  if (err && ((clientStatus >= 400 && clientStatus < 500) || err.type === 'entity.parse.failed')) {
+    if (!res.headersSent) return res.status(clientStatus >= 400 && clientStatus < 500 ? clientStatus : 400).json({ ok: false, error: '请求无效' });
+    return next(err);
   }
   state.log(`请求处理异常：${(err && err.message) || err}`);
-  if (res.headersSent) return;
+  if (res.headersSent) return next(err);
   res.status(500).json({ ok: false, error: '服务器内部错误' });
 });
 
@@ -336,12 +456,23 @@ function fatal(kind, e) {
   shuttingDown = true;
   setTimeout(() => process.exit(1), 100);
 }
-process.on('unhandledRejection', (e) => fatal('未处理的 Promise 拒绝', e));
-process.on('uncaughtException', (e) => fatal('未捕获异常', e));
+function installFatalHandlers() {
+  process.on('unhandledRejection', (e) => fatal('未处理的 Promise 拒绝', e));
+  process.on('uncaughtException', (e) => fatal('未捕获异常', e));
+}
 
-app.listen(PORT, HOST, () => {
-  store.sweepTmp();       // 清理原子写残留的孤儿 .tmp
-  refreshSetupToken();    // 无密码时打印一次性首次设置令牌
-  state.log(`面板/服务已监听 http://${HOST}:${PORT}`);
-  worker.start();
-});
+function startServer(port = PORT, host = HOST) {
+  return app.listen(port, host, () => {
+    store.sweepTmp();       // 清理原子写残留的孤儿 .tmp
+    refreshSetupToken();    // 无密码时打印一次性首次设置令牌
+    state.log(`面板/服务已监听 http://${host}:${port}`);
+    worker.start();
+  });
+}
+
+if (require.main === module) {
+  installFatalHandlers();
+  startServer();
+}
+
+module.exports = { app, startServer };

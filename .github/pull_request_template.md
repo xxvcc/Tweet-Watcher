@@ -21,7 +21,8 @@
 <!-- List checks you ran, such as node --check or manual testing -->
 
 - [ ] `node --check server.js`
-- [ ] `node --check lib/*.js` (syntax-checked changed modules)
+- [ ] `for f in lib/*.js public/*.js; do node --check "$f"; done`
+- [ ] `npm test`
 - [ ] Manual verification in the panel completed
 
 ## Security / secrets check
