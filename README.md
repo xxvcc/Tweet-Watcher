@@ -8,6 +8,8 @@
 
 采集器替代方案的源码审查、离线验证与接入建议见 [twscrape 研究报告](research/twscrape-20261023/README.md)。该研究尚未接入运行时，当前版本继续使用固定的 Bird 库与严格时间线适配器。
 
+第二代已建立独立开发仓库 [Tweet-Watcher-v2](https://github.com/xxvcc/Tweet-Watcher-v2)。本仓库继续维护第一代；两代目录和后续开发安排见 [开发入口说明](docs/V2_DEVELOPMENT_PLAN.md)。
+
 ## ✨ 功能
 
 - 📡 监控多个 Twitter/X 账号的新推文
