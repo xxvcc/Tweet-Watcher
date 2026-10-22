@@ -1,8 +1,8 @@
 # 🐦 Tweet Watcher
 
-极简 Node.js 推特监控 → Telegram 推送工具。基于 [bird](https://github.com/steipete/bird) CLI，纯 Node.js 实现，带 Web 管理面板，网页与后台 worker 同进程运行，开箱即用。核心仅需一个 `server.js` 加 `lib/` 下的几个小模块，使用 JSON 文件管理配置，运行依赖仅 `express` + `bcryptjs`。
+极简 Node.js 推特监控 → Telegram 推送工具。基于固定版本的 [bird](https://github.com/steipete/bird) 库及本项目的严格时间线适配器，纯 Node.js 实现，带 Web 管理面板，网页与后台 worker 同进程运行，开箱即用。核心仅需一个 `server.js` 加 `lib/` 下的几个小模块，使用 JSON 文件管理配置，运行依赖由锁文件管理，包括 `express`、`bcryptjs`、`proxy-addr` 和固定的 Bird 库。
 
-> 💡 版本 `3.4.2`：再经三轮详细审计，补强凭据隔离、认证竞态、异常 bcrypt 哈希、系统时钟回拨、空时间线水位、首次配置回滚、多标签页保存竞态与静态资源缓存更新；现有 87 项自动化回归测试。详见 [CHANGELOG](CHANGELOG.md)。功能面延续 3.2.0：**监控台式面板**（账号状态卡片 + 顶部指标 + 实时活动流，配置收进设置抽屉）、深浅双主题、bird 路径自动检测；单 Node 进程同时承载面板与后台监控 worker，用 SSE 实时推送状态与日志、用 systemd 常驻，无前端框架、无构建步骤。
+> 💡 版本 `3.5.0`：加入持久待发送队列、完整页面校验及有界追页；修复受信任 Cloudflare 代理后的访客识别和 SSE 会话吊销，更新安全依赖，并支持独立管理来源与 `__Host-` Cookie。升级与回滚说明见 [安全修复记录](SECURITY_FIXES_20261023.md)。
 >
 > ⚠️ **从 3.4.1 或更早版本升级，请务必同步更新 systemd 与 Nginx 配置**：生成 `TRUST_PROXY_TOKEN`，并加入文档中的 `EnvironmentFile` 和 Nginx `include`。若从 3.2.x 升级，还需加入 `X-Forwarded-For`（`X-Real-IP` 不能替代它）。缺少共享令牌时服务端会忽略 XFF/XFP，公网请求将共用回环 IP 限流桶，且 HTTPS 登录无法签发 Secure Cookie（见[生产部署](#6-生产部署systemd--nginx)）。
 
@@ -13,7 +13,7 @@
 - ⚙️ 网页面板与后台 worker 同进程，worker 随服务自动启动，无需 Cron、无需独立守护进程
 - 🖥️ **监控台式面板**：打开即见每账号状态卡片（状态灯 / 上次检查·推送 / 最近推文 / 推送量走势 / 下次检查倒计时）+ 顶部指标（账号数·今日推送·运行时长·下次检查）+ 实时活动流；配置收进右上角 ⚙ 设置抽屉
 - 🌗 深色 / 浅色 / 跟随系统 主题一键切换（记忆选择）
-- 🔍 bird CLI 路径自动检测（面板一键查找并填入）
+- 🔍 固定采集程序随应用发布，面板可检查安装状态
 - 🔒 密码保护 + 安全加固（bcrypt、无状态签名会话、CSRF、登录限流、防敏感字段回显、data 目录隔离）
 - 🧠 智能去重（ID 集合，首次运行不推送旧推文）
 - ♻️ 每账号独立设置拉取条数和检查频率，保存后下一轮自动热加载，无需重启
@@ -43,9 +43,12 @@
 │   ├── auth.js             # bcrypt 密码、HMAC 签名会话、CSRF 令牌
 │   ├── state.js            # 运行时状态 + 日志环形缓冲 + 事件总线（SSE 源）
 │   ├── store.js            # 原子 JSON 读写（临时文件 + rename）
-│   ├── bird.js             # 调用 bird CLI 拉取推文并解析
+│   ├── bird.js             # 调用固定采集入口并校验输出
+│   ├── bird-timeline.mjs   # 完整时间线校验及有界追页
+│   ├── outbox.js           # 持久待发送队列及交付确认
 │   ├── telegram.js         # 消息格式化 + Telegram Bot API 发送
 │   └── worker.js           # 调度：按账号间隔拉取、去重、重试推送
+├── bin/bird                # 固定 Node 采集入口
 ├── public/                 # 纯静态前端（无构建、无框架）
 │   ├── index.html          # 面板页面
 │   ├── app.js              # 前端逻辑
@@ -59,7 +62,9 @@
     ├── secrets.json        # 敏感凭据（auth_token / ct0 / tg_bot_token，明文）
     ├── password.json       # 访问密码（bcrypt 哈希）
     ├── session_secret.json # 会话 HMAC 密钥 + epoch
-    └── sent_ids.json       # 已推送推文 ID（去重用）
+    ├── sent_ids.json       # 旧版已推送 ID，仅用于首次迁移
+    ├── delivery_state.json # 待发送内容、已交付 ID 与抓取水位
+    └── delivery_state.initialized.json # 防止交付状态丢失后误用旧 ID 的迁移标记
 ```
 
 ## 📋 前置要求
@@ -67,40 +72,27 @@
 | 依赖 | 说明 |
 |------|------|
 | Node.js ≥ 22 | 运行环境（实测 v24.18.0，与固定的 bird 0.8.0 要求一致）；使用内置 `fetch`、`execFile` 等，无需额外扩展 |
-| npm 依赖 | 仅 `express` + `bcryptjs`，建议用 `npm ci` 按锁文件安装 |
-| bird CLI | `npm install -g @steipete/bird@0.8.0`，用于拉取推文（当前已验证版本） |
+| npm 依赖 | `npm ci --ignore-scripts` 按锁文件安装全部运行依赖 |
+| 采集程序 | 仓库 `bin/bird` 与本地依赖 `@steipete/bird@0.8.0`，无需全局安装 |
 | Telegram Bot | Bot Token + Chat ID |
 | Twitter Cookie | `auth_token` + `ct0` |
 
 > 💡 无需 PHP，也不依赖 `pcntl` / `posix` / `proc_open` 之类的能力。监控 worker 在 Node 进程内直接作为定时循环运行，不 fork 独立守护进程。
 >
-> ⚠️ bird CLI 是外部命令，由 Node 通过 `execFile` 调用（带 30 秒超时）。请确保运行服务的用户对 `bird_path` 指向的可执行文件有执行权限。
+> 采集入口固定为仓库 `bin/bird`，由当前 Node 可执行文件启动，带 30 秒超时。面板不能指定宿主机其他程序；安装目录应由 root 持有并对服务用户只读。
 
 ## 🚀 安装
 
-### 1. 安装 bird CLI
+### 1. 准备 Node.js
 
-```bash
-npm install -g @steipete/bird@0.8.0
-```
-
-验证安装：
-
-```bash
-bird --version
-
-# 查看安装路径（也可在面板设置里点「🔍 自动检测」自动填入）
-which bird
-```
-
-> 💡 面板设置页的 bird CLI 路径支持 **🔍 自动检测**：会在常见位置（与运行 node 同目录、`which bird`、`/usr/local/bin`、`/usr/bin`）自动找到 bird 并填入，无需手动 `which`；找不到时会提示安装或手动填写。默认路径为 `/www/server/nodejs/v24.18.0/bin/bird`。
+安装 Node.js ≥ 22。无需安装或修改全局 Bird CLI，应用使用锁文件中的库和随仓库发布的严格适配器。
 
 ### 2. 拉取代码并安装依赖
 
 ```bash
 git clone https://github.com/xxvcc/Tweet-Watcher.git
 cd Tweet-Watcher
-npm ci
+npm ci --ignore-scripts
 ```
 
 ### 3. 启动服务
@@ -130,7 +122,7 @@ HOST=0.0.0.0 PORT=9000 node server.js
 1. **监控账号列表**：每个账号可单独设置拉取条数和检查频率
 2. **Twitter 认证**：`auth_token` 和 `ct0`（已保存时显示一行圆点，留空即保持不变；点 👁 可明文核对）
 3. **Telegram 推送**：Bot Token 和 Chat ID
-4. **bird CLI 路径**：可点 **🔍 自动检测** 自动填入
+4. **采集程序**：位置只读，可点 **🔍 检查安装** 查看状态
 5. 点击 💾 **保存配置**（几秒内热加载生效，无需重启）
 6. 点击各个 🧪 **测试** 按钮验证连接是否正常
 
@@ -241,6 +233,12 @@ server {
 >
 > ⚠️ 面板端口只监听回环，请务必只从本机 Nginx 反代，不要直接对公网开放。
 
+若站点经过 Cloudflare，Nginx 应仅对 Cloudflare 官方网段信任 `CF-Connecting-IP`，恢复真实访客地址后再转发。本应用也兼容旧反代：只有本机代理令牌有效、最右 XFF 地址属于随版本核对的 Cloudflare 网段、且访客头为单个合法 IP 时，才使用该访客头；其他来源的同名头被忽略。
+
+管理面板应使用独立来源，例如 `https://tweet.lanny.me`，与 WordPress 等站点隔离。为服务设置 `PUBLIC_ORIGIN=https://tweet.lanny.me` 后，要求精确 Host、可信 HTTPS，以及所有修改请求的匹配 Origin；使用绑定来源的 `__Host-tw_sess` / `__Host-tw_csrf`。旧来源会话不能迁移复用，需要重新登录。不要在新入口可用之前启用该环境变量。
+
+本机宝塔集成示例位于 `deploy/nginx/panel-proxy.conf`，应放入该独立虚拟主机的 extension 目录；保留宝塔已有证书路径、验证目录与续期任务。旧入口只跳转落地页，旧 API 返回 410。详细发布和回滚要求见 [安全修复记录](SECURITY_FIXES_20261023.md)。
+
 > 💡 无需 `.htaccess`：仓库内的 `data/` 与 `public/` 并列，Node 只静态伺服 `public/`，因此运行时数据不经 Web 暴露。
 
 ## ⚙️ 配置说明
@@ -253,7 +251,9 @@ Twitter、Telegram 与监控配置均通过 Web 页面管理。生产反代另�
 | `secrets.json` | `auth_token`、`ct0`、`tg_bot_token`（明文存储，目录权限保护） |
 | `password.json` | 访问密码的 bcrypt 哈希 |
 | `session_secret.json` | 会话 HMAC 密钥与 epoch |
-| `sent_ids.json` | 每账号已推送 ID（去重表） |
+| `sent_ids.json` | 旧版已推送 ID，仅首次迁移时读取 |
+| `delivery_state.json` | 待发送正文、已交付 ID、抓取水位、目标指纹及缺口告警 |
+| `delivery_state.initialized.json` | 已建立交付状态的持久标记，必须与状态文件一起备份/恢复 |
 
 首次运行无需任何配置文件即可启动，`config.js` 内置默认值（当然需要在 Web 页面填写 Token 才能正常工作）。
 
@@ -261,7 +261,7 @@ Twitter、Telegram 与监控配置均通过 Web 页面管理。生产反代另�
 
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
-| `bird_path` | bird CLI 可执行文件路径 | `/www/server/nodejs/v24.18.0/bin/bird` |
+| `bird_path` | 只读兼容字段，旧路径自动映射到固定入口 | 应用目录的 `bin/bird` |
 | `auth_token` | Twitter Cookie 认证令牌 | - |
 | `ct0` | Twitter Cookie CSRF Token | - |
 | `tg_bot_token` | Telegram Bot Token | - |
@@ -273,7 +273,7 @@ Twitter、Telegram 与监控配置均通过 Web 页面管理。生产反代另�
 | 字段 | 说明 | 默认值 |
 |------|------|--------|
 | `username` | Twitter 用户名（不含 @，需匹配 `^[A-Za-z0-9_]{1,15}$`） | （必填） |
-| `fetch_count` | 每次拉取推文条数（1–50） | `10` |
+| `fetch_count` | 首次拉取目标条数（1–50）；完整保留响应页，后续按原有水位有界追页 | `10` |
 | `check_interval` | 检查频率（秒，30–3600） | `300` |
 
 > 💡 修改任何配置后点击「保存配置」即可生效，worker 会在下一轮 tick（每 5 秒一轮）自动读取新值，**无需重启**。已保存的密文字段（`auth_token` / `ct0` / `tg_bot_token`）在页面上不回显，**留空即保持不变**。
@@ -315,7 +315,7 @@ Twitter、Telegram 与监控配置均通过 Web 页面管理。生产反代另�
 - `data/` 目录权限 `0700`、文件写入 `0600`，并位于静态 Web 根 `public/` 之外（Node 只对 `public/` 使用 `express.static`）
 - 文件写入使用原子替换（临时文件 + `fsync` + `rename` + 目录 `fsync`），防止崩溃/断电导致半写损坏；读取时区分「文件不存在」与「存在但损坏」，损坏不静默当作「未设置」
 - 损坏或结构非法的 `config.json` / `secrets.json` 会 fail-closed；已有敏感配置、或当前 worker 已加载过有效配置时，意外缺失的 `config.json` 也不会被当成首次空配置（包括运行中 `data/` 挂载消失）。单独迁移 `sent_ids.json` 仍受支持，配置落盘前 worker 会保留其中的去重记录。系统不会覆盖损坏文件，worker 会停止并报为不健康，Web 进程保持在线。请从 journald 查看错误并从备份恢复，不要直接删除敏感配置后带空值继续运行
-- `bird_path` 只接受绝对路径、限定字符集、无 `..`、且文件名必须为 `bird`——防止已认证用户将其改指向 `/bin/sh` 等宿主二进制。注意该校验拦不住一个**名为 `bird` 的符号链接**指向别处（利用它需要已认证 + 对宿主有写权限）
+- 采集入口固定为应用 `bin/bird`，通过当前 Node 启动；拒绝从面板选择其他可执行文件。安装目录由 root 持有，仅数据目录允许服务用户写入。
 - 子进程调用 bird 带 30 秒超时保护，防止挂起；Twitter Cookie 通过 bird 0.8.0 支持的 `AUTH_TOKEN` / `CT0` 环境变量传递，不进入可被其他本机用户读取的进程命令行，并且子进程只继承运行所需的最小环境变量集合
 - 忘记密码时，需**停服 → 删除 `password.json` → 重启**，重启后从服务端日志读取新的一次性 `setup_token` 再走首次设置：
 
@@ -356,17 +356,20 @@ X链接：https://x.com/elonmusk/status/1234567890
 
 | 策略 | 说明 |
 |------|------|
-| ID 集合 | 每个账号维护已推送的推文 ID 列表，持久化到 `sent_ids.json` |
+| ID 集合 | 每个账号维护已推送 ID、抓取水位及待发送队列，原子持久化到 `delivery_state.json` |
 | 首次静默 | 账号首次运行只记录当前推文 ID，不推送旧推文；若首次时间线为空，则持久化当前 Twitter Snowflake 时间水位，确保之后发布的第一条推文不会再次被当成基线漏掉 |
 | 集合上限 | 每个账号最多保留 200 条 ID |
 | 置顶推保护 | 淘汰时优先保留"仍出现在本次拉取窗口内"的 ID —— 否则长期置顶的推文会被挤出去重表并每满 200 条重推一次 |
 | 历史推文保护 | 未知但小于或等于已知最高雪花 ID 的条目视为置顶/扩窗带回的旧推文，不补发；真正的新推文按 ID 从旧到新发送 |
-| 孤立清理 | 从配置中删除账号后，worker 自动清理其去重记录、计时与状态 |
+| 孤立清理 | 从配置中删除账号后，worker 清理其交付状态及待发送队列；只修改用户名大小写不会丢队列 |
 | 转推识别 | 兼容显式转推字段，并识别 bird 0.8.0 精简输出中的标准 `RT @账号:` 前缀；转推标记为 🔁，原创推文标记为 🐦 |
-| 按账号落盘 | 每个账号一轮检查推送完毕后统一写盘 `sent_ids.json`（而非每条一次），降低写放大；语义仍是 at-least-once —— 崩溃至多导致"已发未记"，下轮重发 |
-| 损坏即重建 | `sent_ids.json` 整体损坏或某账号的值不是数组时，按"首次运行"处理（重建基线、不推送），而不是把整条时间线当新推文全量推出 |
+| 先保存再发送 | 完整保存新抓取内容后才发送；每条发送成功立即确认落盘。Telegram 成功到确认落盘之间崩溃，可能重发，但不会因为窗口移动丢掉已保存内容 |
+| 损坏即停止 | 状态或标记损坏、已存在标记但状态缺失时停止推送；运行中丢失已加载文件也会停止。重启时状态完整而标记缺失可安全补建标记；两文件同时丢失无法识别历史初始化，必须从完整备份恢复。首次导入旧 ID 保留旧版空账号基线兼容 |
+| 缺口检测 | 完整页面校验后最多追赶 10 页；仍无法覆盖原水位会持续显示缺口告警，后续成功不掩盖该告警 |
+| 目标绑定 | 待发送队列绑定 Bot/Chat 指纹；改变目标时冻结旧队列，恢复原目标才继续，移除账号会明确丢弃队列 |
+| 容量限制 | 每账号最多 1,000 条，全局 5,000 条，JSON 最多 6 MiB；达到上限保留旧队列并停止推进抓取水位 |
 
-瞬时网络失败最多重试 3 次，重试间隔为 2 秒。任何 Telegram 429 都会立即建立 bot 级全局退避窗口（最长 1 小时），本轮不再占用 worker 槽位等待，并按 `retry_after` 把当前及后续推文顺延。永久性 4xx 不重试；全部失败时记录日志、保留该 ID 未推状态，下轮仍可再试。旧推文失败时不会越过它发送更新推文。
+瞬时网络失败最多重试 3 次，重试间隔为 2 秒。Telegram 429 建立 bot 级全局退避（最长 1 小时），已保存的正文跨检查和重启保留；退避期间仍可采集。永久性 4xx 不在本轮重试。每账号每轮最多交付 50 条；旧消息失败时不会跳过它发送后续消息。抓取失败时，已持久化且目标匹配的旧队列仍可继续交付。删除账号会丢弃它的积压，请先核对状态。
 
 ## 📋 日志查看
 
@@ -397,10 +400,10 @@ journalctl -u tweet-watcher -f
 
 迁移到新服务器：
 
-1. 拷贝整个项目目录（含 `server.js`、`lib/`、`public/`、`package.json`）
-2. 新服务器安装 Node.js ≥ 22 与已验证的 bird CLI：`npm install -g @steipete/bird@0.8.0`
-3. `npm ci --omit=dev` 按锁文件安装运行依赖
-4. （可选）拷贝 `data/` 目录以保留配置、凭据、密码与去重记录；若只想保留去重记录，单独拷贝 `data/sent_ids.json`
+1. 拷贝整个项目目录（含 `server.js`、`lib/`、`bin/`、`public/`、`package.json`、`package-lock.json`）
+2. 新服务器安装 Node.js ≥ 22
+3. 在应用目录执行 `npm ci --omit=dev --ignore-scripts`，按锁文件安装运行依赖
+4. 拷贝完整 `data/` 以保留配置、凭据、密码、待发送队列及迁移标记；不要仅复制旧 `sent_ids.json` 来替代 3.5.0 的交付状态。首次迁移旧版本时仍支持仅导入旧 ID 文件
 5. 配好 systemd / Nginx 后启动服务，访问面板确认状态
 
 > 💡 拷贝 `data/` 后请确认目录权限仍为 `0700`、文件为 `0600`，且属主是运行服务的用户。
@@ -411,10 +414,7 @@ journalctl -u tweet-watcher -f
 
 1. 查看日志：面板「实时日志」或 `journalctl -u tweet-watcher -n 50`
 2. 检查面板「监控状态」是否为运行中、是否被「暂停监控」
-3. 检查 Twitter Cookie 是否过期：
-   ```bash
-   AUTH_TOKEN=YOUR_TOKEN CT0=YOUR_CT0 bird user-tweets elonmusk --json -n 1 --no-color
-   ```
+3. 在设置中点击「测试 Twitter 拉取」，确认固定采集程序及已保存的 Twitter Cookie 可用；测试只读取时间线
 4. 重新获取 Cookie，在 Web 页面更新即可（下一轮 tick 自动生效）
 
 ### Q: 面板打不开 / 打开空白？
@@ -425,18 +425,7 @@ journalctl -u tweet-watcher -f
 
 ### Q: 点「测试 Twitter 拉取」报错？
 
-多半是 bird CLI 路径不对、Cookie 失效或未填。可在服务器终端手动排查：
-
-```bash
-# 检查安装与路径
-bird --version
-which bird
-
-# 手动测试拉取（与服务端调用一致）
-AUTH_TOKEN=YOUR_TOKEN CT0=YOUR_CT0 bird user-tweets elonmusk --json -n 1 --no-color
-```
-
-> ⚠️ `bird_path` 会经过格式校验：必须是绝对路径、限定字符集、不含 `..`，且**文件名必须为 `bird`**（防止改指向其它宿主二进制）。请填写 bird 可执行文件的真实绝对路径，如 `which bird` 的输出。
+确认 Cookie 有效，点击「检查安装」。依赖缺失时由管理员在应用目录执行 `npm ci --ignore-scripts`。页面结构不完整、用户不可用或分页异常会明确失败，不能将错误响应解释为空时间线。不要把全局 CLI 的宽松解析输出作为完整性证明。
 
 ### Q: 想用别的方式常驻，而不是 systemd？
 

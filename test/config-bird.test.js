@@ -20,6 +20,8 @@ test('account normalization ignores malformed username types instead of throwing
 });
 
 test('configuration string boundaries reject oversized paths and chat IDs', () => {
+  assert.equal(config.validBirdPath(config.BUNDLED_BIRD), true);
+  assert.equal(config.validBirdPath('/tmp/bird'), false);
   assert.equal(config.validBirdPath('/tmp/' + 'a'.repeat(5000) + '/bird'), false);
   assert.equal(config.validChatId('1'.repeat(32)), true);
   assert.equal(config.validChatId('1'.repeat(33)), false);
@@ -195,7 +197,7 @@ test('tweet fields are bounded at the ingestion boundary', () => {
   assert.equal(tweets[0].time.length, 256);
   assert.equal(tweets[0].url.length, 2048);
   assert.equal(bird.normalizeTweets([{ id_str: '1'.repeat(33) }], 'alice'), null);
-  assert.equal(bird.normalizeTweets(Array.from({ length: 101 }, (_, i) => ({ id_str: String(i + 1) })), 'alice'), null);
+  assert.equal(bird.normalizeTweets(Array.from({ length: 501 }, (_, i) => ({ id_str: String(i + 1) })), 'alice'), null);
 });
 
 test('bird 0.8 compact output recognizes the standard retweet text prefix', () => {
@@ -208,16 +210,23 @@ test('bird 0.8 compact output recognizes the standard retweet text prefix', () =
 });
 
 async function fetchFromFakeBird(stdout) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tweet-watcher-bird-'));
-  const executable = path.join(dir, 'bird');
+  const childProcess = require('child_process');
+  const modulePath = require.resolve('../lib/bird');
+  const cached = require.cache[modulePath];
+  const originalExecFile = childProcess.execFile;
   try {
-    // writeSync avoids a Node 24 child-process edge where a one-shot process.stdout.write can exit before flushing.
-    fs.writeFileSync(executable, `#!/usr/bin/env node\nrequire('fs').writeSync(1, ${JSON.stringify(stdout)});\n`, { mode: 0o700 });
-    return await bird.fetchTweets({
-      birdPath: executable, username: 'alice', count: 1, authToken: 'auth', ct0: 'ct0',
+    childProcess.execFile = (file, args, opts, callback) => {
+      queueMicrotask(() => callback(null, stdout, ''));
+      return {};
+    };
+    delete require.cache[modulePath];
+    return await require('../lib/bird').fetchTweets({
+      birdPath: config.BUNDLED_BIRD, username: 'alice', count: 1, authToken: 'auth', ct0: 'ct0',
     });
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    childProcess.execFile = originalExecFile;
+    if (cached) require.cache[modulePath] = cached;
+    else delete require.cache[modulePath];
   }
 }
 
@@ -249,7 +258,7 @@ test('bird fetch timeout uses an unignorable kill signal', { concurrency: false 
     delete require.cache[modulePath];
     const isolatedBird = require('../lib/bird');
     const result = await isolatedBird.fetchTweets({
-      birdPath: '/tmp/bird', username: 'alice', count: 1, authToken: 'auth', ct0: 'ct0',
+      birdPath: config.BUNDLED_BIRD, username: 'alice', count: 1, authToken: 'auth', ct0: 'ct0',
     });
     assert.equal(result.ok, false);
     assert.equal(options.timeout, 30000);
@@ -272,16 +281,20 @@ test('bird credentials are passed through a minimal environment and never argv',
     process.env.TRUST_PROXY_TOKEN = 'proxy-secret-that-must-not-reach-bird';
     childProcess.execFile = (file, args, opts, callback) => {
       invocation = { file, args, opts };
-      queueMicrotask(() => callback(null, '[]', ''));
+      queueMicrotask(() => callback(null, JSON.stringify({ tweets: [], coverage: {
+        complete: true, oldestId: null, exhausted: true, reachedSince: false,
+      } }), ''));
       return {};
     };
     delete require.cache[modulePath];
     const isolatedBird = require('../lib/bird');
     const result = await isolatedBird.fetchTweets({
-      birdPath: '/tmp/bird', username: 'alice', count: 1,
+      birdPath: config.BUNDLED_BIRD, username: 'alice', count: 1,
       authToken: 'auth-secret', ct0: 'ct0-secret',
     });
     assert.equal(result.ok, true);
+    assert.equal(invocation.file, process.execPath);
+    assert.equal(invocation.args[0], config.BUNDLED_BIRD);
     assert.equal(invocation.args.includes('auth-secret'), false);
     assert.equal(invocation.args.includes('ct0-secret'), false);
     assert.equal(invocation.args.includes('--auth-token'), false);
@@ -304,11 +317,45 @@ test('bird rejects invalid executable and argv values without spawning', async (
   assert.equal(badPath.ok, false);
   assert.match(badPath.error, /路径非法/);
 
-  const badCredential = await bird.fetchTweets({ ...base, birdPath: '/tmp/bird', authToken: 'bad\0token' });
+  const badCredential = await bird.fetchTweets({ ...base, birdPath: config.BUNDLED_BIRD, authToken: 'bad\0token' });
   assert.equal(badCredential.ok, false);
   assert.match(badCredential.error, /格式非法/);
 
-  const oversized = await bird.fetchTweets({ ...base, birdPath: '/tmp/bird', ct0: 'x'.repeat(4097) });
+  const oversized = await bird.fetchTweets({ ...base, birdPath: config.BUNDLED_BIRD, ct0: 'x'.repeat(4097) });
   assert.equal(oversized.ok, false);
   assert.match(oversized.error, /格式非法/);
+});
+
+test('legacy configured executable is migrated on read and cannot be selected or executed', async () => {
+  const originalRead = store.readState;
+  const originalWrite = store.writeJSON;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tweet-watcher-untrusted-'));
+  const executable = path.join(dir, 'bird');
+  const marker = path.join(dir, 'executed');
+  try {
+    fs.writeFileSync(executable, `#!/usr/bin/env node\nrequire('fs').writeFileSync(${JSON.stringify(marker)}, 'bad');\n`, { mode: 0o700 });
+    store.readState = () => ({ status: 'ok', value: { bird_path: executable, accounts: [] } });
+    store.writeJSON = () => assert.fail('invalid configuration must not be written');
+    const loaded = config.getConfig();
+    assert.equal(loaded.bird_path, config.BUNDLED_BIRD);
+    assert.throws(() => config.saveConfig({ ...loaded, bird_path: executable }), /非法配置/);
+    const result = await bird.fetchTweets({ birdPath: executable, username: 'alice', count: 1, authToken: 'auth', ct0: 'ct0' });
+    assert.equal(result.ok, false);
+    assert.equal(fs.existsSync(marker), false);
+    const detected = await bird.detectBird();
+    assert.equal(detected.found, true);
+    assert.equal(detected.path, config.BUNDLED_BIRD);
+  } finally {
+    store.readState = originalRead;
+    store.writeJSON = originalWrite;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('only the strict adapter output can establish page completeness', async () => {
+  for (const payload of [[], { tweets: [] }, { tweets: [], coverage: { complete: false } }]) {
+    const result = await fetchFromFakeBird(JSON.stringify(payload));
+    assert.equal(result.ok, false);
+    assert.equal(result.error, 'bird 输出结构不受支持');
+  }
 });

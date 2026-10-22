@@ -1,6 +1,6 @@
 {
   "name": "tweet-watcher",
-  "version": "3.4.2",
+  "version": "3.5.0",
   "private": true,
   "description": "Twitter/X -> Telegram monitor with a built-in web panel (single Node service)",
   "main": "server.js",
@@ -9,8 +9,10 @@
     "test": "node --test"
   },
   "dependencies": {
+    "@steipete/bird": "0.8.0",
     "bcryptjs": "^2.4.3",
-    "express": "^4.21.2"
+    "express": "4.22.3",
+    "proxy-addr": "2.0.8"
   },
   "engines": {
     "node": ">=22"

@@ -5,6 +5,10 @@ const path = require('path');
 const crypto = require('crypto');
 const net = require('net');
 const express = require('express');
+const proxyAddr = require('proxy-addr');
+// Snapshot of https://www.cloudflare.com/ips-v4 and /ips-v6, reviewed with the
+// deployment realip list. Never fetch or widen this trust boundary at runtime.
+const cloudflareAddress = proxyAddr.compile(require('./lib/cloudflare-ranges.json'));
 const cfgmod = require('./lib/config');
 const store = require('./lib/store');
 const auth = require('./lib/auth');
@@ -14,6 +18,22 @@ const worker = require('./lib/worker');
 
 const PORT = process.env.PORT || 8787;
 const HOST = process.env.HOST || '127.0.0.1';
+// 独立管理域名部署时固定浏览器来源。省略时保留本地开发和子路径代理兼容性。
+function parsePublicOrigin(value) {
+  if (value === undefined || value === '') return null;
+  let parsed;
+  try { parsed = new URL(value); } catch (_) { throw new Error('PUBLIC_ORIGIN 必须为完整的 HTTP(S) 来源'); }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password
+    || parsed.pathname !== '/' || parsed.search || parsed.hash || parsed.origin !== value) {
+    throw new Error('PUBLIC_ORIGIN 必须仅包含协议、主机和可选端口，不能包含路径或凭据');
+  }
+  return parsed;
+}
+const PUBLIC_URL = parsePublicOrigin(process.env.PUBLIC_ORIGIN);
+const PUBLIC_ORIGIN = PUBLIC_URL ? PUBLIC_URL.origin : '';
+const HOST_COOKIES = !!PUBLIC_URL && PUBLIC_URL.protocol === 'https:';
+const SESSION_COOKIE = HOST_COOKIES ? '__Host-tw_sess' : 'tw_sess';
+const CSRF_COOKIE = HOST_COOKIES ? '__Host-tw_csrf' : 'tw_csrf';
 
 const app = express();
 app.disable('x-powered-by');
@@ -50,7 +70,14 @@ function requestOrigin(req, expectedToken = TRUST_PROXY_TOKEN) {
   if (trustedProxy) {
     const xff = typeof headers['x-forwarded-for'] === 'string' ? headers['x-forwarded-for'] : '';
     const forwardedIp = normalizeIp(xff.split(',').pop());
-    if (net.isIP(forwardedIp)) clientIp = forwardedIp;
+    if (net.isIP(forwardedIp)) {
+      clientIp = forwardedIp;
+      // Nginx appends its transport peer as the last XFF hop. Only a validated
+      // Cloudflare peer may supply this visitor header; an arbitrary client or
+      // same-machine process cannot opt into it by forging the header alone.
+      const cloudflareVisitor = normalizeIp(headers['cf-connecting-ip']);
+      if (cloudflareAddress(forwardedIp) && net.isIP(cloudflareVisitor)) clientIp = cloudflareVisitor;
+    }
     secure = typeof headers['x-forwarded-proto'] === 'string'
       && headers['x-forwarded-proto'].trim().toLowerCase() === 'https';
   }
@@ -75,12 +102,28 @@ app.use((req, res, next) => {
   next();
 });
 
+// API 响应一律不缓存，包括来源校验失败的响应。
+app.use('/api', (req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+app.use((req, res, next) => {
+  if (!PUBLIC_URL) return next();
+  // 不信任 X-Forwarded-Host；Nginx 必须向后端传递固定的面板 Host。
+  if (typeof req.headers.host !== 'string' || req.headers.host.toLowerCase() !== PUBLIC_URL.host) {
+    return res.status(421).json({ ok: false, error: '访问来源不匹配' });
+  }
+  if (HOST_COOKIES && !req.twSecure) return res.status(403).json({ ok: false, error: '请使用 HTTPS 访问' });
+  // 同站子域之间 SameSite Cookie 仍可发送，必须再校验完整 Origin（包含登录和首次设置）。
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers.origin !== PUBLIC_ORIGIN) {
+    return res.status(403).json({ ok: false, error: '请求来源不匹配' });
+  }
+  next();
+});
+
 // 请求体只接受 JSON：前端全部走 JSON，urlencoded 无消费者，去掉可缩小攻击面
 app.use(express.json({ limit: '256kb' }));
 
 // —— cookie 解析（无第三方依赖）——
 app.use((req, res, next) => {
-  req.cookies = {};
+  req.cookies = Object.create(null);
   const h = req.headers.cookie;
   if (h) for (const part of h.split(';')) {
     const i = part.indexOf('=');
@@ -94,26 +137,38 @@ app.use((req, res, next) => {
   next();
 });
 
-// API 响应一律不缓存：其中含会话态与凭据存在性，不得被浏览器/中间代理留存
-app.use('/api', (req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
-
 // async 路由包装：把 rejected promise 交给统一错误中间件，避免 Express4 下请求永久挂起
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 // 只使用经过代理令牌认证的协议，直接读取 X-Forwarded-Proto 会允许本机伪造。
 function cookieSecure(req) { return !!req.twSecure; }
+function validSession(req) { return auth.verifySession(req.cookies[SESSION_COOKIE], PUBLIC_ORIGIN); }
+function validCsrf(req) { return auth.checkCsrf(req.cookies[CSRF_COOKIE], req.headers['x-csrf']); }
+function clearAuthCookies(req, res) {
+  const options = { path: '/', secure: HOST_COOKIES || cookieSecure(req), sameSite: 'lax' };
+  res.clearCookie(SESSION_COOKIE, { ...options, httpOnly: true });
+  res.clearCookie(CSRF_COOKIE, options);
+  if (HOST_COOKIES) {
+    res.clearCookie('tw_sess', { path: '/' });
+    res.clearCookie('tw_csrf', { path: '/' });
+  }
+}
 function setAuthCookies(req, res) {
-  const secure = cookieSecure(req);
+  const secure = HOST_COOKIES || cookieSecure(req);
   const maxAge = 7 * 24 * 3600 * 1000;
-  res.cookie('tw_sess', auth.makeSession(), { httpOnly: true, sameSite: 'lax', secure, path: '/', maxAge });
-  res.cookie('tw_csrf', auth.makeCsrf(), { httpOnly: false, sameSite: 'lax', secure, path: '/', maxAge });
+  if (HOST_COOKIES) {
+    res.clearCookie('tw_sess', { path: '/' });
+    res.clearCookie('tw_csrf', { path: '/' });
+  }
+  res.cookie(SESSION_COOKIE, auth.makeSession(PUBLIC_ORIGIN), { httpOnly: true, sameSite: 'lax', secure, path: '/', maxAge });
+  res.cookie(CSRF_COOKIE, auth.makeCsrf(), { httpOnly: false, sameSite: 'lax', secure, path: '/', maxAge });
 }
 function requireAuth(req, res, next) {
-  if (auth.hasPassword() && auth.verifySession(req.cookies.tw_sess)) return next();
+  if (auth.hasPassword() && validSession(req)) return next();
   res.status(401).json({ ok: false, error: '未登录' });
 }
 function requireCsrf(req, res, next) {
-  if (auth.checkCsrf(req.cookies.tw_csrf, req.headers['x-csrf'])) return next();
+  if (validCsrf(req)) return next();
   res.status(403).json({ ok: false, error: 'CSRF 校验失败' });
 }
 
@@ -173,7 +228,7 @@ function recordFail(ip) {
 let passwordChangeInFlight = false;
 app.get('/api/session', (req, res) => {
   const hasPassword = auth.hasPassword();
-  res.json({ hasPassword, authed: hasPassword && auth.verifySession(req.cookies.tw_sess) });
+  res.json({ hasPassword, authed: hasPassword && validSession(req) });
 });
 app.post('/api/setup', wrap(async (req, res) => {
   if (auth.hasPassword()) return res.status(400).json({ ok: false, error: '已设置过密码' });
@@ -228,11 +283,10 @@ app.post('/api/login', wrap(async (req, res) => {
 app.post('/api/logout', (req, res) => {
   // 仅在持有有效会话 + CSRF 时才全局吊销(bumpEpoch)，否则任意未认证请求可借此制造全局登出 DoS。
   // 无论是否认证都清掉本请求的 Cookie（即便会话已过期也能正常登出）。
-  if (auth.verifySession(req.cookies.tw_sess) && auth.checkCsrf(req.cookies.tw_csrf, req.headers['x-csrf'])) {
+  if (validSession(req) && validCsrf(req)) {
     auth.bumpEpoch();
   }
-  res.clearCookie('tw_sess', { path: '/' });
-  res.clearCookie('tw_csrf', { path: '/' });
+  clearAuthCookies(req, res);
   res.json({ ok: true });
 });
 app.post('/api/password', requireAuth, requireCsrf, wrap(async (req, res) => {
@@ -312,7 +366,7 @@ app.post('/api/config', requireAuth, requireCsrf, (req, res) => {
   if (typeof b.bird_path === 'string' && b.bird_path.trim()) {
     const bp = b.bird_path.trim();
     if (cfgmod.validBirdPath(bp)) bird_path = bp;
-    else warnings.push('bird 路径非法（须为绝对路径且文件名为 bird），已保留原值');
+    else warnings.push('bird 路径固定为随应用部署的可信执行器，已保留原值');
   }
   let tg_chat_id = cur.tg_chat_id;
   if (b.tg_chat_id !== undefined) {
@@ -432,10 +486,12 @@ app.get('/api/stream', requireAuth, (req, res) => {
   let closing = false;
   let released = false;
   let ka = null;
+  let unsubscribeRevocation = null;
   const stopProducing = () => {
     if (closing) return;
     closing = true;
     if (ka) clearInterval(ka);
+    if (unsubscribeRevocation) unsubscribeRevocation();
     state.bus.off('status', onStatus); state.bus.off('log', onLog);
   };
   const cleanup = () => {
@@ -454,6 +510,8 @@ app.get('/api/stream', requireAuth, (req, res) => {
   };
   const send = (event, data, id) => {
     if (closing) return;
+    // 每一帧都验证：覆盖过期、密码文件被删除，以及心跳触发前产生的新事件。
+    if (!sessionIsValid()) { closeStream(); return; }
     // 慢客户端不得让待发数据在进程内无界堆积：超过阈值直接断开，由前端重连
     if (res.writableLength > SSE_MAX_BUFFER) { closeStream(true); return; }
     const idLine = id == null ? '' : `id: ${id}\n`;
@@ -461,15 +519,20 @@ app.get('/api/stream', requireAuth, (req, res) => {
   };
   const onStatus = (s) => send('status', s);
   const onLog = (l) => send('log', l, l.id);
+  const sessionIsValid = () => {
+    try { return auth.hasPassword() && validSession(req); }
+    catch (_) { return false; } // 读盘故障时关闭流，不让总线回调异常拖垮 worker。
+  };
 
   // 先注册完整生命周期，再回放初始帧。若大回放触发慢客户端断开，cleanup 才能清掉全部资源。
   req.on('close', cleanup);
   res.on('close', cleanup);
   state.bus.on('status', onStatus);
   state.bus.on('log', onLog);
+  unsubscribeRevocation = auth.onSessionRevoked(() => closeStream());
   ka = setInterval(() => {
     // 会话被登出/改密/过期后主动断流，避免向已吊销会话持续推送
-    if (!auth.hasPassword() || !auth.verifySession(req.cookies.tw_sess)) { closeStream(); return; }
+    if (!sessionIsValid()) { closeStream(); return; }
     try { res.write(': ping\n\n'); } catch (_) { closeStream(); }
   }, 25000);
 
@@ -529,4 +592,4 @@ if (require.main === module) {
   startServer();
 }
 
-module.exports = { app, startServer, requestOrigin };
+module.exports = { app, startServer, requestOrigin, parsePublicOrigin };

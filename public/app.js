@@ -36,7 +36,7 @@
   async function api(method, path, body) {
     const opts = { method, credentials: 'same-origin', headers: {} };
     if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
-    if (method !== 'GET') opts.headers['x-csrf'] = getCookie('tw_csrf');
+    if (method !== 'GET') opts.headers['x-csrf'] = getCookie('__Host-tw_csrf') || getCookie('tw_csrf');
     const res = await fetch(path, opts);
     let data = null; try { data = await res.json(); } catch (_) {}
     if (res.status === 401 && !KEEP_ON_401.has(path)) {
@@ -162,7 +162,7 @@
     }
   }
 
-  // ---------- bird 路径提示 / 自动检测 ----------
+  // ---------- 采集程序安装状态 ----------
   let birdOk = true;
   let birdDetectInFlight = false;
   let settingsViewGeneration = 0;
@@ -171,14 +171,14 @@
   function setBirdInstallHint(kind, before, after) {
     const h = $('bird-hint'); if (!h) return;
     h.textContent = before;
-    h.appendChild(el('code', null, 'npm install -g @steipete/bird@0.8.0'));
+    h.appendChild(el('code', null, 'npm ci --ignore-scripts'));
     h.appendChild(document.createTextNode(after));
     birdHintColor(h, kind);
   }
   async function detectBird(auto) {
     const btn = $('btn-detect-bird');
     if (birdDetectInFlight) {
-      if (!auto) toast('bird 自动检测正在进行，请稍候', 'err');
+      if (!auto) toast('采集程序检查正在进行，请稍候', 'err');
       return;
     }
     const startingPath = $('bird_path').value;
@@ -201,12 +201,11 @@
       }
       if (r.found) {
         $('bird_path').value = r.path;
-        settingsDirty = true;
-        setBirdHint('ok', '✅ 已检测到：' + r.path + (r.version ? '（' + r.version + '）' : '') + '，记得点保存。');
-        if (!auto) toast('✅ 已检测到 bird：' + r.path, 'ok');
+        setBirdHint('ok', '✅ 采集程序已就绪' + (r.version ? '（' + r.version + '）' : '') + '。');
+        if (!auto) toast('✅ 采集程序已就绪', 'ok');
       } else {
-        setBirdInstallHint('warn', '⚠ 未检测到 bird。请安装 ', '，或手动填写路径。');
-        if (!auto) toast('未检测到 bird，请先安装或手动填写路径', 'err');
+        setBirdInstallHint('warn', '⚠ 采集程序不完整。请管理员在应用目录运行 ', '，然后重新检查。');
+        if (!auto) toast('采集程序不完整，请联系管理员修复安装', 'err');
       }
     } catch (e) { if (!auto) toast(e.message, 'err'); }
     finally {
@@ -279,8 +278,8 @@
     $('tg_bot_token').placeholder = c.secrets.hasTgBotToken ? DOTS : '';
     renderAcctRows(accountsCfg);
     ['auth_token', 'ct0', 'tg_bot_token'].forEach(refreshReveal);
-    if (!birdOk) setBirdInstallHint('warn', '⚠ 当前 bird 路径不存在。点「🔍 自动检测」或手动填写；未安装请 ', '。');
-    else setBirdInstallHint('', '当前路径可用。未安装可 ', ' 后点自动检测。');
+    if (!birdOk) setBirdInstallHint('warn', '⚠ 采集程序不完整。请管理员在应用目录运行 ', '，然后重新检查。');
+    else setBirdHint('ok', '采集程序已就绪，安装位置由服务器管理。');
     settingsDirty = false;
     remoteConfigPending = false;
     remoteConfigRevision = null;

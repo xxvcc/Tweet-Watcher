@@ -34,6 +34,7 @@ const authMock = {
   savePasswordHash: (...args) => savePasswordHash(...args),
   sessionEpoch: () => epoch,
   bumpEpoch: () => { epoch++; },
+  onSessionRevoked: () => () => {},
   makeSession: () => `session-${epoch}`,
   makeCsrf: () => 'csrf-token',
 };

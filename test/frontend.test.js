@@ -221,6 +221,33 @@ const baseConfig = (revision = 10, overrides = {}) => ({
   ...overrides,
 });
 
+test('CSRF submission supports the legacy subpath and prefers host-only cookies after migration', async () => {
+  const app = await loadApp(async (url) => {
+    if (url === 'api/session') return response({ hasPassword: true, authed: true });
+    if (url === 'api/config') return response(baseConfig());
+    if (url === 'api/control') return response({ ok: true, paused: true });
+    throw new Error(`unexpected request: ${url}`);
+  });
+  for (const [cookie, expected, base] of [
+    ['other=value; tw_csrf=legacy%2Dcsrf', 'legacy-csrf', 'https://lanny.me/a/'],
+    ['tw_csrf=stale-legacy; __Host-tw_csrf=host%2Dcsrf', 'host-csrf', 'https://tweet.lanny.me/'],
+    ['__Host-tw_csrf=rotated-csrf; tw_csrf=stale-legacy', 'rotated-csrf', 'https://tweet.lanny.me/'],
+    ['__Host-tw_csrf=; tw_csrf=local-csrf', 'local-csrf', 'http://localhost:8787/'],
+  ]) {
+    app.document.cookie = cookie;
+    await app.ids.get('btn-pause').onclick();
+    const request = app.requests.at(-1);
+    assert.equal(request.url, 'api/control', 'relative API paths preserve the /a/ proxy mount');
+    assert.equal(new URL(request.url, base).href, `${base}api/control`);
+    assert.equal(request.opts.method, 'POST');
+    assert.equal(request.opts.credentials, 'same-origin');
+    assert.equal(request.opts.headers['x-csrf'], expected);
+  }
+  for (const request of app.requests.filter((item) => item.opts.method === 'GET')) {
+    assert.equal(request.opts.headers['x-csrf'], undefined);
+  }
+});
+
 test('same-content remote revision preserves a local draft and advances its save base', async () => {
   let config = baseConfig(10);
   let posted = null;

@@ -6,6 +6,25 @@ The format is inspired by Keep a Changelog.
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-10-23
+
+### Security
+- Revoke open SSE streams immediately after durable session invalidation and check authentication before every event, including expiry and storage failure.
+- Resolve Cloudflare visitor addresses only behind the authenticated local proxy and verified Cloudflare peer ranges; reject spoofed, duplicate and malformed visitor headers.
+- Add optional `PUBLIC_ORIGIN` enforcement, origin-bound sessions and secure host-only cookies for a dedicated management origin.
+- Replace configurable host executables with a checked-in Node collector and pinned Bird library; upgrade Express, proxy-addr, body-parser and qs to patched versions.
+
+### Reliability
+- Persist captured message bodies before delivery, acknowledge each successful send atomically, and retain the backlog across retries, restarts, moved fetch windows and X outages.
+- Bind pending messages to their Bot/Chat destination, preserve account identity across case-only edits, bound queue capacity and fail closed on damaged/missing state or storage errors.
+- Keep a durable initialization marker to prevent stale legacy-ID migration after state loss.
+- Validate full raw X timeline pages, support pinned/visibility/module entries, follow bounded catch-up pagination and preserve unresolved gap warnings.
+- Never treat unavailable users, partial pages, unrecognized entries or nonterminal empty windows as healthy empty timelines.
+
+### Validation
+- Added regression coverage for revocation, old/new cookie modes, proxy spoofing, page completeness, durable backlog, crash/storage faults, destination changes and queue limits.
+- Deployment templates preserve BaoTa-managed certificate renewal and isolate the panel from the CMS origin.
+
 ## [3.4.2] - 2026-07-26
 
 ### Security

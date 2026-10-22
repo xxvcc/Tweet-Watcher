@@ -114,3 +114,52 @@ test('sessions issued far in the future fail closed after a clock rollback', () 
     Date.now = originalNow;
   }
 });
+
+test('sessions are scoped to the configured origin and reject legacy tokens after migration', () => {
+  const local = auth.makeSession();
+  const isolated = auth.makeSession('https://tweet.lanny.me');
+  assert.equal(auth.verifySession(local), true);
+  assert.equal(auth.verifySession(local, 'https://tweet.lanny.me'), false);
+  assert.equal(auth.verifySession(isolated, 'https://tweet.lanny.me'), true);
+  assert.equal(auth.verifySession(isolated, 'https://lanny.me'), false);
+  assert.equal(auth.verifySession(isolated), false);
+});
+
+test('revocation notifies synchronously after persistence and isolates listener failures', () => {
+  const originalWrite = store.writeJSON;
+  const calls = [];
+  const token = auth.makeSession();
+  const unsubscribeBad = auth.onSessionRevoked(() => { calls.push('bad'); throw new Error('synthetic'); });
+  const unsubscribeGood = auth.onSessionRevoked(() => {
+    assert.equal(auth.verifySession(token), false);
+    calls.push('good');
+  });
+  try {
+    store.writeJSON = () => { calls.push('persisted'); };
+    auth.bumpEpoch();
+    assert.deepEqual(calls, ['persisted', 'bad', 'good']);
+    unsubscribeBad(); unsubscribeGood();
+    calls.length = 0;
+    auth.bumpEpoch();
+    assert.deepEqual(calls, ['persisted']);
+  } finally {
+    unsubscribeBad(); unsubscribeGood();
+    store.writeJSON = originalWrite;
+  }
+});
+
+test('failed epoch persistence never reports a revocation that disappears on restart', () => {
+  const originalWrite = store.writeJSON;
+  const token = auth.makeSession();
+  let called = false;
+  const unsubscribe = auth.onSessionRevoked(() => { called = true; });
+  try {
+    store.writeJSON = () => { throw new Error('synthetic disk full'); };
+    assert.throws(() => auth.bumpEpoch(), /disk full/);
+    assert.equal(called, false);
+    assert.equal(auth.verifySession(token), true);
+  } finally {
+    unsubscribe();
+    store.writeJSON = originalWrite;
+  }
+});

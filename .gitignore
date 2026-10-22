@@ -19,6 +19,8 @@ secrets.json
 password.json
 session_secret.json
 sent_ids.json
+delivery_state.json
+delivery_state.initialized.json
 config.json
 
 # --- store.js 原子写残留的临时文件 --------------------------------------

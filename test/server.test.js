@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { app, requestOrigin } = require('../server');
+const { app, requestOrigin, parsePublicOrigin } = require('../server');
 
 let server;
 let base;
@@ -51,15 +51,89 @@ test('forwarded client identity requires both loopback transport and the private
   });
 });
 
+test('PUBLIC_ORIGIN accepts only a canonical HTTP(S) origin', () => {
+  assert.equal(parsePublicOrigin(undefined), null);
+  assert.equal(parsePublicOrigin(''), null);
+  assert.equal(parsePublicOrigin('https://tweet.lanny.me').origin, 'https://tweet.lanny.me');
+  assert.equal(parsePublicOrigin('http://localhost:8787').origin, 'http://localhost:8787');
+  for (const value of ['https://tweet.lanny.me/', 'https://user:password@tweet.lanny.me',
+    'https://tweet.lanny.me/a', 'https://tweet.lanny.me?x=1', 'file:///tmp/panel',
+    'https://tweet.lanny.me#fragment', 'tweet.lanny.me', ' https://tweet.lanny.me']) {
+    assert.throws(() => parsePublicOrigin(value), /PUBLIC_ORIGIN/);
+  }
+});
+
+test('authenticated Cloudflare forwarding separates visitors sharing one relay', () => {
+  const token = 'p'.repeat(32);
+  const request = {
+    socket: { remoteAddress: '127.0.0.1' },
+    headers: { 'x-tweet-watcher-proxy-token': token, 'x-forwarded-for': '104.16.1.2' },
+  };
+  for (const visitor of ['198.51.100.7', '203.0.113.9', '2001:db8::123']) {
+    request.headers['cf-connecting-ip'] = visitor;
+    assert.equal(requestOrigin(request, token).clientIp, visitor);
+  }
+  request.headers['x-forwarded-for'] = '203.0.113.222, 104.16.1.2';
+  request.headers['cf-connecting-ip'] = '198.51.100.7';
+  assert.equal(requestOrigin(request, token).clientIp, '198.51.100.7', 'untrusted XFF prefix must not select the visitor');
+});
+
+test('Cloudflare visitor header never bypasses transport, proxy-token or rightmost-hop validation', () => {
+  const token = 'p'.repeat(32);
+  const request = {
+    socket: { remoteAddress: '127.0.0.1' },
+    headers: {
+      'x-tweet-watcher-proxy-token': token,
+      'x-forwarded-for': '104.16.1.2',
+      'cf-connecting-ip': '198.51.100.7',
+    },
+  };
+  for (const credentials of ['', 'wrong-token']) {
+    request.headers['x-tweet-watcher-proxy-token'] = credentials;
+    assert.equal(requestOrigin(request, token).clientIp, '127.0.0.1');
+  }
+  request.headers['x-tweet-watcher-proxy-token'] = token;
+  request.socket.remoteAddress = '104.16.1.2';
+  assert.equal(requestOrigin(request, token).clientIp, '104.16.1.2', 'even a Cloudflare peer needs the authenticated local proxy');
+  request.socket.remoteAddress = '127.0.0.1';
+  for (const xff of ['203.0.113.9', '104.16.1.2, 203.0.113.9', '104.16.1.2, invalid', '104.16.1.2,']) {
+    request.headers['x-forwarded-for'] = xff;
+    assert.equal(requestOrigin(request, token).clientIp, xff.endsWith('203.0.113.9') ? '203.0.113.9' : '127.0.0.1');
+  }
+});
+
+test('Cloudflare forwarding accepts IPv6 and mapped IPv4 but rejects malformed visitor headers', () => {
+  const token = 'p'.repeat(32);
+  const request = {
+    socket: { remoteAddress: '::1' },
+    headers: {
+      'x-tweet-watcher-proxy-token': token,
+      'x-forwarded-for': '2606:4700::1234',
+      'cf-connecting-ip': '2001:db8::9',
+    },
+  };
+  assert.equal(requestOrigin(request, token).clientIp, '2001:db8::9');
+  request.headers['x-forwarded-for'] = '::ffff:104.16.1.2';
+  request.headers['cf-connecting-ip'] = '::ffff:198.51.100.7';
+  assert.equal(requestOrigin(request, token).clientIp, '198.51.100.7');
+  for (const visitor of ['', 'invalid', '198.51.100.7, 203.0.113.9', ['198.51.100.7', '203.0.113.9'], '198.51.100.7:443']) {
+    request.headers['cf-connecting-ip'] = visitor;
+    assert.equal(requestOrigin(request, token).clientIp, '104.16.1.2');
+  }
+  request.headers['x-forwarded-for'] = '2001:db8::99';
+  request.headers['cf-connecting-ip'] = '198.51.100.7';
+  assert.equal(requestOrigin(request, token).clientIp, '2001:db8::99', 'already-restored visitor address must remain authoritative');
+});
+
 test('panel entrypoint keeps assets relative for reverse-proxy subpaths', async (t) => {
   if (listenUnavailable) return t.skip('sandbox does not permit local listen sockets');
   const response = await fetch(`${base}/`);
   const html = await response.text();
   assert.equal(response.status, 200);
-  assert.match(html, /href="style\.css\?v=3\.4\.2"/);
-  assert.match(html, /src="app\.js\?v=3\.4\.2"/);
+  assert.match(html, /href="style\.css\?v=3\.5\.0"/);
+  assert.match(html, /src="app\.js\?v=3\.5\.0"/);
 
-  const script = await fetch(`${base}/app.js?v=3.4.2`);
+  const script = await fetch(`${base}/app.js?v=3.5.0`);
   assert.match(script.headers.get('content-type') || '', /javascript/);
 });
 
