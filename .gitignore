@@ -42,6 +42,8 @@ jspm_packages/
 
 # --- 日志 ---------------------------------------------------------------
 *.log
+# Archived offline test evidence, reviewed to contain no runtime credentials.
+!/research/twscrape-20261023/evidence/upstream-tests.log
 logs/
 npm-debug.log*
 yarn-debug.log*

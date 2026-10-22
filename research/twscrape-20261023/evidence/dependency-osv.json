@@ -1,0 +1,6 @@
+{
+  "source": "OSV batch API",
+  "packages": 29,
+  "affected": [],
+  "scope": "installed research environment only; no native bundled library completeness claim"
+}

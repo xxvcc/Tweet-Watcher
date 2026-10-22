@@ -1,0 +1,56 @@
+{
+  "sqlite": {
+    "mode": "0o644",
+    "cleartext_auth_present": true,
+    "cookie_only_has_password_placeholder": true
+  },
+  "cookie_jar": [
+    {
+      "name": "auth_token",
+      "domain": "",
+      "secure": false
+    },
+    {
+      "name": "ct0",
+      "domain": "",
+      "secure": false
+    }
+  ],
+  "simulated_cross_origin_redirect": {
+    "requests": 2,
+    "target_host": "outside.example",
+    "auth_cookie_forwarded": true,
+    "csrf_header_forwarded": true
+  },
+  "debug_dump": {
+    "directory_mode": "0o755",
+    "file_mode": "0o644",
+    "set_cookie_preserved": true,
+    "response_preserved": true
+  },
+  "invalid_accounts_exception": {
+    "password_in_exception": true
+  },
+  "imap_info_log": {
+    "code_returned": true,
+    "otp_in_log": true
+  },
+  "telemetry": {
+    "event": "gql_request",
+    "property_keys": [
+      "$current_url",
+      "$lib",
+      "$process_person_profile",
+      "$session_id",
+      "app_version",
+      "distinct_id",
+      "http_backend",
+      "http_method",
+      "operation",
+      "platform",
+      "python",
+      "source"
+    ],
+    "destination": "https://app.posthog.com/batch/"
+  }
+}

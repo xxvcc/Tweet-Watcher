@@ -6,6 +6,8 @@
 >
 > ⚠️ **从 3.4.1 或更早版本升级，请务必同步更新 systemd 与 Nginx 配置**：生成 `TRUST_PROXY_TOKEN`，并加入文档中的 `EnvironmentFile` 和 Nginx `include`。若从 3.2.x 升级，还需加入 `X-Forwarded-For`（`X-Real-IP` 不能替代它）。缺少共享令牌时服务端会忽略 XFF/XFP，公网请求将共用回环 IP 限流桶，且 HTTPS 登录无法签发 Secure Cookie（见[生产部署](#6-生产部署systemd--nginx)）。
 
+采集器替代方案的源码审查、离线验证与接入建议见 [twscrape 研究报告](research/twscrape-20261023/README.md)。该研究尚未接入运行时，当前版本继续使用固定的 Bird 库与严格时间线适配器。
+
 ## ✨ 功能
 
 - 📡 监控多个 Twitter/X 账号的新推文

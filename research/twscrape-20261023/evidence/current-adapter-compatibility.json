@@ -1,0 +1,34 @@
+[
+  {
+    "fixture": "raw_user_tweets.json",
+    "accepted": true,
+    "tweets": 21,
+    "fields": [
+      "tweets",
+      "cursor",
+      "oldestId",
+      "exhausted"
+    ]
+  },
+  {
+    "fixture": "raw_user_tweets_and_replies.json",
+    "accepted": true,
+    "tweets": 26,
+    "fields": [
+      "tweets",
+      "cursor",
+      "oldestId",
+      "exhausted"
+    ]
+  },
+  {
+    "fixture": "_user_tweets_own_author_without_profile.json",
+    "accepted": false,
+    "reason": "Incomplete X timeline: missing tweet author or timestamp"
+  },
+  {
+    "fixture": "_user_tweets_bot_reply_to_operator.json",
+    "accepted": false,
+    "reason": "Incomplete X timeline: missing page boundary"
+  }
+]

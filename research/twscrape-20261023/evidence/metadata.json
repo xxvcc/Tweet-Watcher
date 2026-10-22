@@ -1,0 +1,38 @@
+{
+  "checked_at": "2026-10-23T01:06:12.610739+08:00",
+  "repository": "https://github.com/vladkens/twscrape",
+  "main_commit": "63f61a518e576ea5c132f1156c03dda0520d76c1",
+  "release_tag": "v0.20.1",
+  "release_commit": "5271cbdc5da1095b765a2a7ec750b4ac686d581f",
+  "pypi_latest": "0.20.1",
+  "wheel_sha256": "bfad943020361fc882b09ac49685e11d65b88743723de419b3d7873fe09d56e3",
+  "python": "3.13.5",
+  "upstream_tests": {
+    "passed": 276,
+    "failed": 0,
+    "line_coverage_percent": 82,
+    "network": "unshare --net",
+    "uid": "nobody"
+  },
+  "synthetic_pagination_scenarios": 28,
+  "pagination_versions_compared": 2,
+  "live_x_requests": 0,
+  "production_credentials_used": false,
+  "production_code_changed": false,
+  "curl_probe": {
+    "backend_version": "0.16.3",
+    "network": "isolated namespace; loopback only",
+    "schemes": [
+      "http",
+      "https"
+    ],
+    "tls_verified": true,
+    "cross_host_redirect_auth_cookie": false,
+    "cross_host_redirect_csrf_header": true
+  },
+  "osv": {
+    "queried_installed_packages": 29,
+    "matching_advisories": 0,
+    "native_bundled_components_fully_audited": false
+  }
+}

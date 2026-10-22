@@ -1,0 +1,56 @@
+{
+  "curl_cffi_version": "0.16.3",
+  "network_scope": "unshare --net; loopback only; no external route; no proxy",
+  "http": {
+    "requests_observed": 4,
+    "initial_host_received_cookie": true,
+    "initial_host_received_csrf": true,
+    "cross_host_redirect_received_cookie": false,
+    "cross_host_redirect_received_csrf": true,
+    "reused_client_direct_other_host_received_cookie": true,
+    "reused_client_direct_other_host_received_csrf": true,
+    "fresh_client_direct_arbitrary_host_received_cookie": true,
+    "fresh_client_direct_arbitrary_host_received_csrf": true,
+    "cookie_jar": [
+      {
+        "name": "auth_token",
+        "domain_empty": true,
+        "secure": false
+      },
+      {
+        "name": "ct0",
+        "domain_empty": true,
+        "secure": false
+      }
+    ],
+    "tls_certificate_verified": false,
+    "tls_rejects_test_cert_without_explicit_trust": null,
+    "different_loopback_hosts": true
+  },
+  "https": {
+    "requests_observed": 4,
+    "initial_host_received_cookie": true,
+    "initial_host_received_csrf": true,
+    "cross_host_redirect_received_cookie": false,
+    "cross_host_redirect_received_csrf": true,
+    "reused_client_direct_other_host_received_cookie": true,
+    "reused_client_direct_other_host_received_csrf": true,
+    "fresh_client_direct_arbitrary_host_received_cookie": true,
+    "fresh_client_direct_arbitrary_host_received_csrf": true,
+    "cookie_jar": [
+      {
+        "name": "auth_token",
+        "domain_empty": true,
+        "secure": false
+      },
+      {
+        "name": "ct0",
+        "domain_empty": true,
+        "secure": false
+      }
+    ],
+    "tls_certificate_verified": true,
+    "tls_rejects_test_cert_without_explicit_trust": true,
+    "different_loopback_hosts": true
+  }
+}

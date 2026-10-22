@@ -33,7 +33,7 @@
 - 官方 Cloudflare API 网段与发布列表 22 项一致。
 - 依赖扫描：0 告警；安装使用锁文件和 `--ignore-scripts`。
 - 以专用服务用户对 4 个现有账号执行新版只读采集：均成功、页面完整、均覆盖原有水位；没有发测试消息，也没有修改生产去重/队列。
-- Chromium 153.0.8010.12 在隔离 HTTPS 实例验证旧入口与独立来源两种模式：真实登录及前端 CSRF 操作均成功；会话 Cookie 为 Secure、HttpOnly、host-only，独立来源使用 `__Host-` 前缀；同级来源修改请求返回 403；登出清除 Cookie，并使仍打开的第二标签页停止接收后续 SSE 事件。两种模式均无页面 JavaScript 错误、无对外请求。测试使用真实应用/认证/前端，存储、配置及 worker 等为内存替身与假凭据；结果见 `/tmp/tweet-watcher-audit/browser-security-result.json`。生产验证待完成。
+- Chromium 153.0.8010.12 在隔离 HTTPS 实例验证旧入口与独立来源两种模式：真实登录及前端 CSRF 操作均成功；会话 Cookie 为 Secure、HttpOnly、host-only，独立来源使用 `__Host-` 前缀；同级来源修改请求返回 403；登出清除 Cookie，并使仍打开的第二标签页停止接收后续 SSE 事件。两种模式均无页面 JavaScript 错误、无对外请求。测试使用真实应用/认证/前端，存储、配置及 worker 等为内存替身与假凭据；结果见 `/tmp/tweet-watcher-audit/browser-security-result.json`。生产验证见下文“生产发布与核验”。
 
 ## 发布方案
 

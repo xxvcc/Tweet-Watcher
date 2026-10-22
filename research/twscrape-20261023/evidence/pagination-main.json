@@ -1,0 +1,244 @@
+{
+  "control_valid_page": {
+    "ids": [
+      "100",
+      "101"
+    ],
+    "dumps": []
+  },
+  "one_bad_tweet_skipped": {
+    "ids": [
+      "100",
+      "102"
+    ],
+    "dumps": [
+      {
+        "kind": "tweet",
+        "type": "ValueError",
+        "id": "101"
+      }
+    ]
+  },
+  "tweet_without_legacy_key_silently_ignored": {
+    "ids": [],
+    "dumps": []
+  },
+  "missing_text_accepted": {
+    "ids": [
+      "105"
+    ],
+    "dumps": [],
+    "texts": [
+      ""
+    ]
+  },
+  "author_profile_absent": {
+    "ids": [
+      "106"
+    ],
+    "dumps": [],
+    "author_names": [
+      ""
+    ]
+  },
+  "pin_only_direct_parse": {
+    "ids": [
+      "110"
+    ],
+    "dumps": []
+  },
+  "pin_only_raw": {
+    "fetched": 1,
+    "yielded_pages": 0,
+    "parsed_ids_per_page": [],
+    "raised": null
+  },
+  "module_prefix_only_direct_parse": {
+    "ids": [
+      "111"
+    ],
+    "dumps": []
+  },
+  "module_prefix_only_raw": {
+    "fetched": 1,
+    "yielded_pages": 0,
+    "parsed_ids_per_page": [],
+    "raised": null
+  },
+  "profile_module_raw": {
+    "fetched": 1,
+    "yielded_pages": 1,
+    "parsed_ids_per_page": [
+      [
+        "111"
+      ]
+    ],
+    "raised": null
+  },
+  "visibility_wrapper": {
+    "ids": [
+      "112"
+    ],
+    "dumps": []
+  },
+  "repeat_cursor_new_content_lost": {
+    "fetched": 2,
+    "yielded_pages": 1,
+    "parsed_ids_per_page": [
+      [
+        "120"
+      ]
+    ],
+    "raised": null
+  },
+  "three_empty_pages_drop_future_content": {
+    "fetched": 3,
+    "yielded_pages": 0,
+    "parsed_ids_per_page": [],
+    "raised": null
+  },
+  "cursor_cycle_A_B_A_unchecked": {
+    "fetched": 4,
+    "yielded_pages": 4,
+    "parsed_ids_per_page": [
+      [
+        "130"
+      ],
+      [
+        "131"
+      ],
+      [
+        "132"
+      ],
+      [
+        "133"
+      ]
+    ],
+    "raised": null
+  },
+  "later_instruction_direct_parse": {
+    "ids": [
+      "140"
+    ],
+    "dumps": []
+  },
+  "later_instruction_raw": {
+    "fetched": 1,
+    "yielded_pages": 0,
+    "parsed_ids_per_page": [],
+    "raised": null
+  },
+  "raw_limit_one_whole_page": {
+    "fetched": 1,
+    "yielded_pages": 1,
+    "parsed_ids_per_page": [
+      [
+        "100",
+        "101"
+      ]
+    ],
+    "raised": null
+  },
+  "parsed_limit_one_splits_page": {
+    "fetched": 1,
+    "ids": [
+      "100"
+    ],
+    "texts": [
+      "synthetic tweet 100"
+    ],
+    "raised": null
+  },
+  "same_id_edit_with_changed_content": {
+    "fetched": 2,
+    "ids": [
+      "150"
+    ],
+    "texts": [
+      "before"
+    ],
+    "raised": null
+  },
+  "three_duplicate_parsed_pages_end_early": {
+    "fetched": 4,
+    "ids": [
+      "151"
+    ],
+    "texts": [
+      "synthetic tweet 151"
+    ],
+    "raised": null
+  },
+  "quote_embedded_only": {
+    "ids": [
+      "160"
+    ],
+    "dumps": []
+  },
+  "quote_also_standalone": {
+    "ids": [
+      "160",
+      "161"
+    ],
+    "dumps": []
+  },
+  "malformed_quote_drops_parent": {
+    "ids": [],
+    "dumps": [
+      {
+        "kind": "tweet",
+        "type": "ValueError",
+        "id": "162"
+      }
+    ]
+  },
+  "retweet_embedded_only": {
+    "ids": [
+      "170"
+    ],
+    "dumps": []
+  },
+  "retweet_original_also_standalone_dropped": {
+    "ids": [
+      "170"
+    ],
+    "dumps": []
+  },
+  "long_note_and_hashtags": {
+    "ids": [
+      "180"
+    ],
+    "dumps": [],
+    "texts": [
+      "long note #note"
+    ],
+    "hashtags": [
+      []
+    ]
+  },
+  "edit_metadata": {
+    "ids": [
+      "190"
+    ],
+    "dumps": [],
+    "editControl": [
+      {
+        "edit_tweet_ids": [
+          "189",
+          "190"
+        ],
+        "initial_tweet_id": "189"
+      }
+    ]
+  },
+  "exception_after_first_page": {
+    "fetched": 2,
+    "yielded_pages": 1,
+    "parsed_ids_per_page": [
+      [
+        "200"
+      ]
+    ],
+    "raised": "RuntimeError"
+  }
+}

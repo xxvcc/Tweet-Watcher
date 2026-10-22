@@ -26,6 +26,9 @@ The format is inspired by Keep a Changelog.
 - Added regression coverage for revocation, old/new cookie modes, proxy spoofing, page completeness, durable backlog, crash/storage faults, destination changes and queue limits.
 - Deployment templates preserve BaoTa-managed certificate renewal and isolate the panel from the CMS origin.
 
+### Documentation
+- Add a version-pinned twscrape evaluation with pagination, authentication, maintenance and dependency findings, reproducible offline probes, and test evidence. This is research only; the runtime collector remains the pinned Bird library and the application's strict adapter.
+
 ## [3.4.2] - 2026-07-26
 
 ### Security
