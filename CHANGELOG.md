@@ -18,6 +18,7 @@ The format is inspired by Keep a Changelog.
 - Persist captured message bodies before delivery, acknowledge each successful send atomically, and retain the backlog across retries, restarts, moved fetch windows and X outages.
 - Bind pending messages to their Bot/Chat destination, preserve account identity across case-only edits, bound queue capacity and fail closed on damaged/missing state or storage errors.
 - Keep a durable initialization marker to prevent stale legacy-ID migration after state loss.
+- Migrate legacy IDs before the first poll when configuration is saved, including unchanged timelines; stop before polling or sending if initialization cannot be persisted.
 - Validate full raw X timeline pages, support pinned/visibility/module entries, follow bounded catch-up pagination and preserve unresolved gap warnings.
 - Never treat unavailable users, partial pages, unrecognized entries or nonterminal empty windows as healthy empty timelines.
 
