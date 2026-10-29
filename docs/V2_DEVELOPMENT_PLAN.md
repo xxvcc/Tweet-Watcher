@@ -1,22 +1,23 @@
-# 第二代开发入口与第一代维护
+# v1 停止维护与 v2 迁移
 
-2026-10-23，已按用户确认的方案建立第二代独立公开仓库和开发目录。完整开发方案、实施状态与后续讨论记录转到第二代仓库维护：
+更新：2026-10-29。v1 已停止维护，最终版本 **3.5.0**，后续不再提供功能、Bug 修复、依赖升级或安全更新。本仓库暂不归档，保留历史版本、代码与许可证供查阅。
 
-- [第二代仓库：Tweet-Watcher-v2](https://github.com/xxvcc/Tweet-Watcher-v2)
-- [开发方案](https://github.com/xxvcc/Tweet-Watcher-v2/blob/main/docs/V2_DEVELOPMENT_PLAN.md)
-- [开发进度](https://github.com/xxvcc/Tweet-Watcher-v2/blob/main/docs/DEVELOPMENT.md)
-- [新会话接续说明](https://github.com/xxvcc/Tweet-Watcher-v2/blob/main/docs/SESSION_HANDOFF.md)
+## 后续项目
 
-第二代从本仓库已发布的 v3.5.0（`baf0c2da0927d4448b6f4525676652b49975c1fb`）派生，保留 Git 历史、许可证及已有安全修复。它目前是开发骨架，twscrape 尚未接入；本仓库继续维护第一代 Bird 实现。
+[Tweet-Watcher-v2](https://github.com/xxvcc/Tweet-Watcher-v2) 从 v1 的 v3.5.0 派生，保留 Git 历史与 MIT 归属。v2 已接入固定 twscrape，支持持久队列、非中文 AI 翻译及管理面板，已完成维护者实例的生产交接；当前发布仍标记为预发布，实际验收范围以其文档为准。
 
-当前服务器的目录职责：
+- [v2 文档索引](https://github.com/xxvcc/Tweet-Watcher-v2/blob/main/docs/README.md)
+- [最新版本与发行说明](https://github.com/xxvcc/Tweet-Watcher-v2/releases)
+- [架构与后续范围](https://github.com/xxvcc/Tweet-Watcher-v2/blob/main/docs/ARCHITECTURE.md)
+- [当前验证摘要](https://github.com/xxvcc/Tweet-Watcher-v2/blob/main/docs/VERIFICATION.md)
+- [迁移与回退指南](https://github.com/xxvcc/Tweet-Watcher-v2/blob/main/docs/MIGRATION.md)
 
-| 用途 | 目录 | 仓库 |
-|---|---|---|
-| 第一代生产服务 | `/www/tweet-watcher` | `xxvcc/Tweet-Watcher` |
-| 第一代开发副本 | `/www/tweet-watcher-v1-dev` | `xxvcc/Tweet-Watcher` |
-| 第二代开发副本 | `/www/tweet-watcher-v2` | `xxvcc/Tweet-Watcher-v2` |
+## 已有实例
 
-第一代后续改动在开发副本完成测试和发布，再部署到生产目录。两代分别管理服务、运行数据、凭据和发送权；公共安全修复按实际影响移植，不共享可写工作树或生产数据。
+v2 是独立项目，不能通过在 v1 目录直接拉取 v2 代码来替换。先备份私有状态，核对监控目标、采集水位、已确认 ID 和待发消息，再按迁移指南逐项执行。
 
-需要在 VS Code 浏览新版时，可保留原窗口中的对话，在新窗口连接同一服务器并打开 `/www/tweet-watcher-v2`。新对话先阅读第二代的 `AGENTS.md` 和接续说明；打开新目录不等于已经迁移原对话的工作目录。
+两代不要共享可写数据目录、依赖、密码或会话密钥，也不要同时向同一目标发送。回退需要合并迁移期间的确认和待发消息，不能直接恢复旧快照。迁移工具生成候选状态，不会自动完成生产交接。
+
+## 反馈范围
+
+新功能、v2 问题和迁移问题请到 v2 仓库；v1 不再承诺修复或支持。安全问题按 [SECURITY.md](../SECURITY.md) 处理，任何报告都不要附上真实凭据或未脱敏运行数据。

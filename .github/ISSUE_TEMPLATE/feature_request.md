@@ -1,9 +1,11 @@
 ---
 name: Feature request
-about: Suggest an idea or improvement for Tweet Watcher
+about: v1 is no longer maintained — new feature requests belong in Tweet-Watcher-v2
 labels: enhancement
 assignees: ''
 ---
+
+> **v1 is no longer maintained.** This repository is retained for historical reference; fixes and responses are not promised. For v2 issues, new features, or migration questions, use [Tweet-Watcher-v2](https://github.com/xxvcc/Tweet-Watcher-v2/issues). Do not publish credentials or exploit details.
 
 ## Summary
 

@@ -1,9 +1,11 @@
 ---
 name: Bug report
-about: Report a problem with Tweet Watcher
+about: Legacy v1 report — v1 is no longer maintained; no fix or response is promised
 labels: bug
 assignees: ''
 ---
+
+> **v1 is no longer maintained.** This repository is retained for historical reference; fixes and responses are not promised. For v2 issues, new features, or migration questions, use [Tweet-Watcher-v2](https://github.com/xxvcc/Tweet-Watcher-v2/issues). Do not publish credentials or exploit details.
 
 ## Summary
 

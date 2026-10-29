@@ -1,5 +1,13 @@
 # 🐦 Tweet Watcher
 
+> **停止维护 / No longer maintained（2026-10-29）**
+>
+> v1 已停止维护，最终版本为 [3.5.0](https://github.com/xxvcc/Tweet-Watcher/releases/tag/v3.5.0)，不再提供新功能、Bug 修复、依赖升级或安全更新。
+>
+> 后续开发转移至 **[Tweet-Watcher-v2](https://github.com/xxvcc/Tweet-Watcher-v2)**。新部署请查看 [v2 文档](https://github.com/xxvcc/Tweet-Watcher-v2/blob/main/docs/README.md)；已有实例请先阅读[迁移与回退指南](https://github.com/xxvcc/Tweet-Watcher-v2/blob/main/docs/MIGRATION.md)。v2 当前处于预发布阶段，请核对其[验证范围](https://github.com/xxvcc/Tweet-Watcher-v2/blob/main/docs/VERIFICATION.md)。
+>
+> 本仓库暂不归档，保留代码、历史版本和记录供查阅；保持开放不代表恢复维护。下方为 v1 最终版本的历史使用说明。
+
 极简 Node.js 推特监控 → Telegram 推送工具。基于固定版本的 [bird](https://github.com/steipete/bird) 库及本项目的严格时间线适配器，纯 Node.js 实现，带 Web 管理面板，网页与后台 worker 同进程运行，开箱即用。核心仅需一个 `server.js` 加 `lib/` 下的几个小模块，使用 JSON 文件管理配置，运行依赖由锁文件管理，包括 `express`、`bcryptjs`、`proxy-addr` 和固定的 Bird 库。
 
 > 💡 版本 `3.5.0`：加入持久待发送队列、完整页面校验及有界追页；修复受信任 Cloudflare 代理后的访客识别和 SSE 会话吊销，更新安全依赖，并支持独立管理来源与 `__Host-` Cookie。升级与回滚说明见 [安全修复记录](SECURITY_FIXES_20261023.md)。
@@ -8,7 +16,7 @@
 
 采集器替代方案的源码审查、离线验证与接入建议见 [twscrape 研究报告](research/twscrape-20261023/README.md)。该研究尚未接入运行时，当前版本继续使用固定的 Bird 库与严格时间线适配器。
 
-第二代已建立独立开发仓库 [Tweet-Watcher-v2](https://github.com/xxvcc/Tweet-Watcher-v2)。本仓库继续维护第一代；两代目录和后续开发安排见 [开发入口说明](docs/V2_DEVELOPMENT_PLAN.md)。
+v1 使用 Bird；后续 v2 已接入 twscrape，保持独立仓库和数据目录。维护状态及迁移入口见[停止维护说明](docs/V2_DEVELOPMENT_PLAN.md)。
 
 ## ✨ 功能
 
@@ -444,18 +452,11 @@ journalctl -u tweet-watcher -f
 
 不需要。保存配置后 worker 会在下一轮 tick（每 5 秒一轮）读取最新的 `config.json`，账号增删、频率与条数调整都会自动生效。
 
-## 🤝 贡献
+## 🤝 贡献与支持状态
 
-欢迎提交 Issue、Pull Request 或部署经验反馈。请只依据代码中真实存在的能力提交问题与改进，附上**脱敏后的**日志（凭据在服务端日志中已自动 redact）与环境信息（Node 版本、bird 版本、部署方式）。
+v1 不再接受新的功能开发或承诺处理 Bug、PR 和部署支持请求。后续开发请参与 [v2 仓库](https://github.com/xxvcc/Tweet-Watcher-v2)，贡献入口见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-## 🧭 支持与反馈
-
-如果你在使用中遇到问题，建议按以下顺序排查：
-
-1. 阅读本 README 对应章节
-2. 查看面板「实时日志」或 `journalctl -u tweet-watcher -f`
-3. 检查 bird CLI、Twitter Cookie 和 Telegram 配置（用面板的 🧪 测试按钮）
-4. 提交 Issue，并附上脱敏后的日志与环境信息
+迁移问题可在 v2 仓库反馈；v1 特有的问题不会自动成为 v2 的缺陷。安全问题请先阅读 [SECURITY.md](SECURITY.md)，不要公开凭据或漏洞利用细节。历史说明可供自行排查，但不代表继续提供维护支持。
 
 ## 📜 License
 

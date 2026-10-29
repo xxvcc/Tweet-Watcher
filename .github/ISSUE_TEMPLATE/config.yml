@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Tweet Watcher usage and deployment questions
-    url: https://github.com/xxvcc/Tweet-Watcher/discussions
-    about: Ask questions about deployment, environment differences, and usage patterns.
+  - name: Tweet Watcher v2 — development and migration
+    url: https://github.com/xxvcc/Tweet-Watcher-v2/issues
+    about: v1 is no longer maintained. Submit v2 issues, new feature requests, or migration questions here.
+  - name: v1 to v2 migration guide
+    url: https://github.com/xxvcc/Tweet-Watcher-v2/blob/main/docs/MIGRATION.md
+    about: Read the state migration and rollback requirements before switching an existing instance.

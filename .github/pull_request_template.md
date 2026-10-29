@@ -1,3 +1,5 @@
+> **v1 is no longer maintained.** New development has moved to [Tweet-Watcher-v2](https://github.com/xxvcc/Tweet-Watcher-v2). Review or merge of v1 pull requests is not promised; this repository remains available for historical reference.
+
 ## Summary
 
 <!-- Describe the purpose of this PR -->

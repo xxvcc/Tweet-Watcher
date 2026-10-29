@@ -1,10 +1,14 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+Historical changes to Tweet Watcher v1 are recorded in this file.
 
 The format is inspired by Keep a Changelog.
 
-## [Unreleased]
+## Maintenance ended — 2026-10-29
+
+- v1 is no longer maintained. Version 3.5.0 remains the final release; no further feature, bug, dependency, or security updates are planned.
+- Development continues in [Tweet-Watcher-v2](https://github.com/xxvcc/Tweet-Watcher-v2). See its [migration guide](https://github.com/xxvcc/Tweet-Watcher-v2/blob/main/docs/MIGRATION.md) before switching.
+- This repository remains available and is not archived. This notice changes documentation only; historical tags, releases, and runtime code are retained.
 
 ## [3.5.0] - 2026-10-23
 
